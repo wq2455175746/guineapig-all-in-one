@@ -1,0 +1,16 @@
+repos:
+  - repo: local
+    hooks:
+      - id: validate-pipeline
+        name: AI Validation Pipeline
+        entry: python3 scripts/validate.py
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]
+        
+      - id: dependency-check
+        name: Check Layer Dependencies
+        entry: python3 scripts/check_dependencies.py
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]

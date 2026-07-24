@@ -1,0 +1,18 @@
+{{- if .Values.rbac.enabled -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ printf "%s-role" $.Values.deployment.name | trunc 63 | trimSuffix "-" }}
+rules:
+{{- if .Values.rbac.rules }}
+{{- range .Values.rbac.rules }}
+- apiGroups: {{ .apiGroups | toJson }}
+  resources: {{ .resources | toJson }}
+  verbs: {{ .verbs | toJson }}
+{{- end }}
+{{- else }}
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "list"]
+{{- end }}
+{{- end }}

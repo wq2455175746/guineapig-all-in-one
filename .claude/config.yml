@@ -1,0 +1,25 @@
+# .claude/config.yml
+# 让 AI 无需确认即可读取 Harness 文件
+
+safety:
+  # 自动允许的 Bash 命令（用于读取文件）
+  autoAllowedBashPrefixes:
+    - cat
+    - head
+    - tail
+    - ls
+    - git status
+    - git diff
+    - make validate
+    - make test
+
+  # 自动允许的工具（无需确认）
+  autoAllowedTools:
+    - fileRead
+    - listFiles
+    - grep
+    - glob
+
+  # 允许读取和写入的目录
+  allowedWriteRoots:
+    - ./

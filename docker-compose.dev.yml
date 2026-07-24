@@ -1,0 +1,88 @@
+version: '3.8'
+
+services:
+  # 后端服务
+  backend:
+    build: ./packages/guineapig-backend
+    container_name: guineapig-backend
+    environment:
+      - DB_HOST=mysql
+      - REDIS_HOST=redis
+      - AIAGENT_HOST=aiagent
+    ports:
+      - "8080:8080"
+    depends_on:
+      - mysql
+      - redis
+      - aiagent
+    volumes:
+      - ./packages/guineapig-backend:/app
+    networks:
+      - guineapig-network
+    command: ["make", "dev"]
+
+  # AI Agent 服务
+  aiagent:
+    build: ./packages/guineapig-aiagent
+    container_name: guineapig-aiagent
+    environment:
+      - REDIS_URL=redis://redis:6379
+    ports:
+      - "8000:8000"      # HTTP API
+      - "50051:50051"    # gRPC
+    depends_on:
+      - redis
+    volumes:
+      - ./packages/guineapig-aiagent:/app
+      - model_cache:/app/models
+    networks:
+      - guineapig-network
+    command: ["make",  "dev"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  # 前端 (开发模式)
+  frontend:
+    build: ./packages/guineapig-ops-web
+    container_name: guineapig-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - VITE_API_URL=http://backend:8080
+    depends_on:
+      - backend
+    volumes:
+      - ./packages/guineapig-ops-web:/app
+      - /app/node_modules
+    networks:
+      - guineapig-network
+    command: ["npm", "run", "dev"]
+
+  # Nginx (生产环境)
+  nginx:
+    image: nginx:alpine
+    container_name: guineapig-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf
+    depends_on:
+      - backend
+      - frontend
+    networks:
+      - guineapig-network
+    profiles:
+      - production
+
+volumes:
+  model_cache:
+
+networks:
+  guineapig-network:
+    driver: bridge

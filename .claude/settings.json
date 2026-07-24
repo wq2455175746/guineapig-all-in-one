@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "hooks": {
+    "PostCompact": [
+      {
+        "matcher": "auto",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 scripts/harness_autoupdate.py",
+            "timeout": 10,
+            "statusMessage": "Saving checkpoint..."
+          },
+          {
+            "type": "command",
+            "command": "python3 -c \"import json, datetime; issues=[]; cf=json.load(open('.ai/CURRENT_FOCUS')); a=(datetime.datetime.now()-datetime.datetime.fromisoformat(cf.get('updated_at',''))).days; cf.get('status')=='in_progress' and issues.append(f'Task in progress: {cf[\\\"task_name\\\"]}'); l=json.load(open('.ai/memory/lessons.json')); ls=l.get('lessons',[]); ls and (datetime.datetime.now()-datetime.datetime.strptime(max(x['date'] for x in ls),'%Y-%m-%d')).days>30 and issues.append('No new lessons in 30d+'); [print(f'  ⚠️  {i}') for i in issues] or print('  ✓ Harness OK') if not issues else None\" 2>&1 || true",
+            "timeout": 10,
+            "statusMessage": "Harness health check..."
+          }
+        ]
+      },
+      {
+        "matcher": "manual",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 scripts/harness_autoupdate.py --reason=compact",
+            "timeout": 10,
+            "statusMessage": "Saving checkpoint..."
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r '.tool_response.filePath // .tool_input.file_path' | { read -r f; case \"$f\" in *guineapig-backend*.go) cd packages/guineapig-backend && go vet ./... 2>&1 && go build ./... 2>&1;; esac; } || true",
+            "timeout": 30,
+            "statusMessage": "Go vet + build..."
+          },
+          {
+            "type": "command",
+            "command": "jq -r '.tool_response.filePath // .tool_input.file_path' | { read -r f; case \"$f\" in *.py) python3 -c \"import ast; ast.parse(open('$f').read())\" 2>&1;; esac; } || true",
+            "timeout": 10,
+            "statusMessage": "Python syntax check..."
+          },
+          {
+            "type": "command",
+            "command": "jq -r '.tool_response.filePath // .tool_input.file_path' | { read -r f; case \"$f\" in *guineapig-backend*.go) gofmt -w \"$f\";; esac; } || true",
+            "timeout": 10,
+            "statusMessage": "Go fmt..."
+          },
+          {
+            "type": "command",
+            "command": "jq -r '.tool_response.filePath // .tool_input.file_path' | { read -r f; case \"$f\" in *guineapig-client*.ts|*guineapig-client*.vue) cd packages/guineapig-client && npx vue-tsc --noEmit 2>&1;; *guineapig-ops-web*.ts|*guineapig-ops-web*.vue) cd packages/guineapig-ops-web && npx vue-tsc --noEmit 2>&1;; esac; } || true",
+            "timeout": 60,
+            "statusMessage": "Vue type check..."
+          },
+          {
+            "type": "command",
+            "command": "jq -r '.tool_response.filePath // .tool_input.file_path' | { read -r f; case \"$f\" in *Dockerfile*|*docker-compose*|*deployment/*/helm/*) bash scripts/validate_infra.sh \"$f\" 2>&1;; esac; } || true",
+            "timeout": 30,
+            "statusMessage": "Infra lint..."
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "make validate 2>&1 || true",
+            "timeout": 60,
+            "statusMessage": "Running make validate..."
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo \"=== $(git branch --show-current) ===\" && git status -s | head -5 && python3 -c \"import json,datetime; cf=json.load(open('.ai/CURRENT_FOCUS')); u=datetime.datetime.fromisoformat(cf['updated_at']); print(f'Task: {cf[\\\"task_name\\\"]} [{cf[\\\"status\\\"]}] ({(datetime.datetime.now()-u).days}d ago)')\" 2>&1 || true",
+            "timeout": 10,
+            "statusMessage": "Loading context..."
+          }
+        ]
+      }
+    ]
+  }
+}

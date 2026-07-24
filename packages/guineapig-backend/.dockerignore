@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+.git/
+.ai/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.idea/
+.DS_Store
+*.log
+logs/
+
+# Build artifacts
+bin/
+
+# Local data
+data/skills/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Git
+.gitignore
+
+# IDE
+.vscode/
+*.swp
+*.swo
+*~

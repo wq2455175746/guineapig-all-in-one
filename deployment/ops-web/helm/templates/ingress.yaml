@@ -1,0 +1,44 @@
+{{- if .Values.ingress.enabled -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Values.ingress.name }}
+  annotations:
+    kubernetes.io/ingress.class: {{ .Values.ingress.class }}
+    nginx.ingress.kubernetes.io/proxy-body-size: {{ .Values.ingress.proxyBodySize }}
+    nginx.ingress.kubernetes.io/proxy-next-upstream-timeout: '{{ .Values.ingress.proxyNextUpstreamTimeout }}'
+    nginx.ingress.kubernetes.io/proxy-read-timeout: '{{ .Values.ingress.proxyReadTimeout }}'
+    nginx.ingress.kubernetes.io/rewrite-target: '{{ .Values.ingress.rewriteTarget }}'
+spec:
+  {{- $hasTLS := false }}
+  {{- range .Values.ingress.rules }}
+    {{- if .tlsSecretName }}{{ $hasTLS = true }}{{ end }}
+  {{- end }}
+  {{- if $hasTLS }}
+  tls:
+  {{- range $, $config := .Values.ingress.rules }}
+  {{- if $config.tlsSecretName }}
+  - hosts:
+      - {{ $config.host | quote }}
+    secretName: {{ $config.tlsSecretName | quote }}
+  {{- end }}
+  {{- end }}
+  {{- end }}
+
+  rules:
+  {{- $root := . -}}
+  {{- range $, $config := .Values.ingress.rules }}
+    - host: {{ $config.host }}
+      http:
+        paths:
+        {{- range $key, $val := $config.paths }}
+          - path: {{ $val.path }}
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: {{ $root.Values.service.name }}
+                port:
+                  number: {{ $val.servicePort }}
+        {{- end }}
+  {{- end }}
+{{- end -}}

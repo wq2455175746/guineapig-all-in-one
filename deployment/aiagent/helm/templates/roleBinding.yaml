@@ -1,0 +1,13 @@
+{{- if .Values.rbac.enabled -}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ printf "%s-role-binding" $.Values.deployment.name | trunc 63 | trimSuffix "-" }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.deployment.name }}-sa
+roleRef:
+  kind: Role
+  name: {{ printf "%s-role" $.Values.deployment.name | trunc 63 | trimSuffix "-" }}
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}

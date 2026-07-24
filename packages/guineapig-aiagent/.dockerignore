@@ -1,0 +1,35 @@
+# Dependencies
+.git/
+.ai/
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.idea/
+.DS_Store
+*.log
+logs/
+tmp/
+
+# AI models (large — download at runtime)
+models/
+
+# Test files
+test/
+tests/
+
+# Environment
+.env
+.env.*
+.env_dev
+
+# Build files
+Dockerfile
+uv.lock
+
+# Deployment scripts
+deployment/
+
+# pip cache
+.pip/

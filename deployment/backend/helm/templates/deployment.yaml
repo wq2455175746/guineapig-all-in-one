@@ -1,0 +1,238 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.deployment.name }}
+spec:
+  replicas: {{ .Values.deployment.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ .Values.deployment.app }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Values.deployment.app }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      {{- if .Values.securityContext.enabled }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: {{ .Values.securityContext.runAsUser }}
+        runAsGroup: {{ .Values.securityContext.runAsGroup }}
+        fsGroup: {{ .Values.securityContext.fsGroup }}
+      {{- end }}
+      {{- if .Values.rbac.enabled }}
+      serviceAccountName: {{ .Values.deployment.name }}-sa
+      {{- end }}
+      {{- if .Values.persistence }}
+      volumes:
+        {{- range $name, $config := .Values.persistence }}
+        {{- if $config.enabled }}
+        - name: {{ $name }}-volume
+          {{- if eq $config.type "pvc" }}
+          persistentVolumeClaim:
+            claimName: {{ $config.existingClaim | default (printf "%s-%s-pvc" $.Values.deployment.name $name) }}
+          {{- else if eq $config.type "hostPath" }}
+          hostPath:
+            path: {{ $config.hostPath.path }}
+            type: {{ $config.hostPath.type | default "Directory" }}
+          {{- else if eq $config.type "configMap" }}
+          configMap:
+            name: {{ $config.configMap.name | default (printf "%s-%s-cm" $.Values.deployment.name $name) }}
+            {{- if $config.configMap.items }}
+            items:
+            {{- range $key, $val := $config.configMap.items }}
+            - key: {{ $val.key }}
+              path: {{ $val.path }}
+            {{- end }}
+            {{- end }}
+          {{- else if eq $config.type "secret" }}
+          secret:
+            secretName: {{ $config.secret.secretName | default (printf "%s-%s-secret" $.Values.deployment.name $name) }}
+            {{- if $config.secret.defaultMode }}
+            defaultMode: {{ $config.secret.defaultMode }}
+            {{- end }}
+            {{- if $config.secret.optional }}
+            optional: {{ $config.secret.optional }}
+            {{- end }}
+            {{- if $config.secret.items }}
+            items:
+            {{- range $key, $val := $config.secret.items }}
+            - key: {{ $val.key }}
+              path: {{ $val.path }}
+            {{- end }}
+            {{- end }}
+          {{- else if eq $config.type "emptyDir" }}
+          emptyDir:
+            {{- if $config.emptyDir }}
+            {{- with $config.emptyDir }}
+            {{- if .medium }}
+            medium: {{ .medium }}
+            {{- end }}
+            {{- if .sizeLimit }}
+            sizeLimit: {{ .sizeLimit }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
+          {{- else }}
+            {{- fail (printf "不支持的 volume 类型: %s" $config.type) }}
+          {{- end }}
+        {{- end }}
+        {{- end }}
+      {{- end }}
+
+      {{- if .Values.deployment.initContainer.enabled }}
+      initContainers:
+      - name: {{ .Values.deployment.initContainer.name }}
+        image: {{ .Values.deployment.initContainer.image  }}
+        imagePullPolicy: {{ .Values.deployment.initContainer.imagePullPolicy}}
+        {{- if .Values.deployment.initContainer.command }}
+        command:
+          {{- toYaml .Values.deployment.initContainer.command | nindent 10 }}
+        {{- end }}
+        {{- if .Values.deployment.initContainer.args }}
+        args: {{ .Values.deployment.initContainer.args | toJson }}
+        {{- end }}
+        {{- if .Values.deployment.initContainer.volumeMounts }}
+        volumeMounts:
+        {{- range $, $config := .Values.deployment.initContainer.volumeMounts }}
+        - name: {{ $config.name }}-volume
+          mountPath: {{ $config.mountPath }}
+          {{- if $config.subPath }}
+          subPath: {{ $config.subPath }}
+          {{- end }}
+          {{- if $config.readOnly }}
+          readOnly: {{ $config.readOnly }}
+          {{- end }}
+        {{- end }}
+        {{- end }}
+        {{- if .Values.deployment.initContainer.env }}
+        env:
+          {{- toYaml .Values.deployment.initContainer.env | nindent 10 }}
+        {{- end }}
+      {{- end }}
+      containers:
+      - name: {{ .Values.deployment.container.name }}
+        image: {{ .Values.deployment.container.image }}
+        {{- if .Values.deployment.container.command }}
+        command:
+          {{- toYaml .Values.deployment.container.command | nindent 10 }}
+        {{- end }}
+        {{- if .Values.deployment.container.args }}
+        args: {{ .Values.deployment.container.args | toJson }}
+        {{- end }}
+        ports:
+        {{- range $, $config := .Values.deployment.container.ports }}
+        - name: {{ $config.name }}
+          containerPort: {{ $config.containerPort }}
+          protocol: {{ $config.protocol }}
+        {{- end -}}
+        {{- if .Values.deployment.container.envFrom }}
+        envFrom:
+          {{- with .Values.deployment.container.envFrom }}
+          {{- toYaml . | nindent 8 }}
+          {{- end }}
+        {{- end }}
+        {{- if .Values.deployment.container.env }}
+        env:
+          {{- with .Values.deployment.container.env }}
+          {{- toYaml . | nindent 8 }}
+          {{- end }}
+        {{- end }}
+        {{- if and .Values.persistence (not (empty .Values.persistence)) }}
+        volumeMounts:
+          {{- range $name, $config := .Values.persistence }}
+          {{- if $config.enabled }}
+          {{- if eq $config.type "pvc" }}
+          {{- range $key, $val := $config.volumeMounts }}
+          - name: {{ $name }}-volume
+            mountPath: {{ $val.mountPath }}
+            {{- if $val.subPath }}
+            subPath: {{ $val.subPath }}
+            {{- end }}
+          {{- end }}
+          {{- else if eq $config.type "configMap" }}
+          {{- range $key, $val := $config.configMap.items }}
+          - name: {{ $name }}-volume
+            mountPath: {{ $val.mountPath }}
+            {{- if $val.subPath }}
+            subPath: {{ $val.subPath }}
+            {{- end }}
+            {{- if $val.readOnly }}
+            readOnly: {{ $val.readOnly }}
+            {{- end }}
+          {{- end }}
+          {{- else if eq $config.type "secret" }}
+          {{- range $key, $val := $config.secret.items }}
+          - name: {{ $name }}-volume
+            mountPath: {{ $val.mountPath }}
+            {{- if $val.subPath }}
+            subPath: {{ $val.subPath }}
+            {{- end }}
+            {{- if $val.readOnly }}
+            readOnly: {{ $val.readOnly }}
+            {{- end }}
+          {{- end }}
+          {{- else }}
+          - name: {{ $name }}-volume
+            mountPath: {{ $config.mountPath }}
+            {{- if $config.subPath }}
+            subPath: {{ $config.subPath }}
+            {{- end }}
+            {{- if $config.readOnly }}
+            readOnly: {{ $config.readOnly }}
+            {{- end }}
+          {{- end }}
+          {{- end }}
+          {{- end }}
+        {{- end }}
+        resources: {{- toYaml .Values.deployment.container.resources | nindent 10 }}
+        {{- if .Values.deployment.container.livenessProbe }}
+        livenessProbe: {{- toYaml .Values.deployment.container.livenessProbe | nindent 10 }}
+        {{ end }}
+        {{- if .Values.deployment.container.readinessProbe }}
+        readinessProbe: {{- toYaml .Values.deployment.container.readinessProbe | nindent 10 }}
+        {{ end }}
+        {{- if .Values.deployment.container.startupProbe }}
+        startupProbe: {{- toYaml .Values.deployment.container.startupProbe | nindent 10 }}
+        {{ end }}
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        imagePullPolicy: {{ .Values.deployment.container.imagePullPolicy }}
+      restartPolicy: {{ .Values.deployment.container.restartPolicy }}
+      terminationGracePeriodSeconds: {{ .Values.deployment.container.terminationGracePeriodSeconds }}
+      dnsPolicy: {{ .Values.deployment.container.dnsPolicy }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.deployment.imagePullSecrets}}
+      imagePullSecrets:
+      {{- with .Values.deployment.imagePullSecrets }}
+      {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- end }}
+      {{- if .Values.deployment.schedulerName }}
+      schedulerName: {{ .Values.deployment.schedulerName | default "" }}
+      {{- end }}
+      {{- if .Values.deployment.hostAliases }}
+      hostAliases:
+      {{- with .Values.deployment.hostAliases }}
+        {{- toYaml . | nindent 6 }}
+      {{- end }}
+      {{- end }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: {{ .Values.deployment.strategy.maxUnavailable }}
+      maxSurge: {{ .Values.deployment.strategy.maxSurge }}
+  revisionHistoryLimit: {{ .Values.deployment.revisionHistoryLimit }}
+  progressDeadlineSeconds: {{ .Values.deployment.progressDeadlineSeconds }}

@@ -1,0 +1,47 @@
+"""
+{{ class_name }} - {{ description }}
+Auto-generated from template. Package: guineapig-aiagent
+"""
+import logging
+from typing import Optional
+
+logger = logging.getLogger(__name__)
+
+{% if use_pydantic %}
+from pydantic import BaseModel
+
+class {{ class_name }}Config(BaseModel):
+    """Configuration for {{ class_name }}"""
+    enabled: bool = True
+    timeout: int = 30
+{% endif %}
+
+class {{ class_name }}:
+    """{{ description }}"""
+
+    def __init__(self{% if use_pydantic %}, config: Optional[{{ class_name }}Config] = None{% endif %}):
+        {% if use_pydantic %}
+        self.config = config or {{ class_name }}Config()
+        {% endif %}
+        logger.info("{{ class_name }} initialized")
+
+    async def execute(self, input_data: dict) -> dict:
+        """
+        Execute the main operation.
+
+        Args:
+            input_data: Input parameters for the operation
+
+        Returns:
+            dict: Operation result
+
+        Raises:
+            ValueError: If input validation fails
+        """
+        logger.info("{{ class_name }}.execute called with: %s", input_data)
+        # TODO: Implement business logic
+        return {"status": "ok", "result": None}
+
+    async def cleanup(self):
+        """Release resources."""
+        logger.info("{{ class_name }}.cleanup called")

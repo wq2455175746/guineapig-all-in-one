@@ -1,0 +1,77 @@
+"""
+Tests for {{ module_name }}
+Auto-generated from template.
+"""
+import pytest
+{% if use_async %}
+import pytest_asyncio
+{% endif %}
+from unittest.mock import Mock, patch
+
+{% if use_fastapi %}
+from fastapi.testclient import TestClient
+{% endif %}
+
+{% if use_async %}
+@pytest_asyncio.fixture
+async def async_setup():
+    """Setup async test fixtures."""
+    yield
+    # teardown
+{% endif %}
+
+@pytest.fixture
+def setup():
+    """Setup test fixtures."""
+    yield
+    # teardown
+
+class Test{{ class_name }}:
+    """Test suite for {{ class_name }}"""
+
+    def test_init(self, setup):
+        """Test initialization."""
+        # TODO: Implement test
+        pass
+
+    def test_execute_success(self, setup):
+        """Test successful execution."""
+        # TODO: Implement test
+        pass
+
+    def test_execute_invalid_input(self, setup):
+        """Test execution with invalid input."""
+        # TODO: Implement test
+        with pytest.raises(ValueError):
+            pass
+
+    def test_execute_edge_case(self, setup):
+        """Test edge cases."""
+        # TODO: Implement test
+        pass
+{% if use_async %}
+    @pytest.mark.asyncio
+    async def test_async_execute(self, async_setup):
+        """Test async execution."""
+        # TODO: Implement test
+        pass
+{% endif %}
+{% if use_fastapi %}
+class Test{{ class_name }}API:
+    """API endpoint tests"""
+
+    @pytest.fixture
+    def client(self):
+        from main import app
+        return TestClient(app)
+
+    def test_endpoint_returns_200(self, client):
+        """Test endpoint returns 200."""
+        # TODO: Implement test
+        pass
+
+    def test_endpoint_validation_error(self, client):
+        """Test endpoint returns 422 on invalid input."""
+        # TODO: Implement test
+        pass
+{% endif %}

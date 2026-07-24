@@ -1,0 +1,73 @@
+# AI 工作区 (保留必要文件)
+.ai/checkpoints/*.tmp
+.ai/traces/session-*.tmp
+
+# 环境变量（包含所有敏感凭据）
+.env
+.env.*
+!.env.example
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# 日志
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# 构建产物
+dist/
+build/
+target/
+*.exe
+*.dll
+*.so
+*.dylib
+*.pyc
+__pycache__/
+*.class
+
+# 依赖
+node_modules/
+vendor/
+
+# 测试覆盖率
+coverage/
+.nyc_output/
+.coverage
+htmlcov/
+
+# 临时文件
+tmp/
+temp/
+*.tmp
+*.temp
+
+# 操作系统
+Thumbs.db
+Desktop.ini
+
+# 私钥和证书
+*.key
+!**/public.key
+*.pem
+
+# 本地 Claude 配置（含权限白名单）
+.claude/settings.local.json
+
+# 特定服务
+packages/guineapig-aiagent/models/*  # 大模型文件
+packages/guineapig-client/release/    # 客户端安装包
+
+# 数据库
+*.db
+*.sqlite
+/packages/guineapig-aiagent/.venv/
+/packages/guineapig-aiagent/data/

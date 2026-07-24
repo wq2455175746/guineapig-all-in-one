@@ -1,0 +1,233 @@
+# ============================================================
+# GuineaPig All-in-One — Development Docker Compose
+# ============================================================
+# Usage:
+#   docker compose up -d                    # Start all services
+#   docker compose up -d mysql redis minio  # Start only infra
+#   docker compose logs -f backend aiagent  # Tail logs
+# ============================================================
+
+version: "3.8"
+
+x-common-env: &common-env
+  TZ: Asia/Shanghai
+
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+# ============================================================
+# Infrastructure Services
+# ============================================================
+
+services:
+  # ---------- MySQL ----------
+  mysql:
+    image: mysql:8.0
+    container_name: guineapig-mysql
+    <<: *common-env
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: guineapig_dev
+      MYSQL_DATABASE: guineapig
+      MYSQL_USER: guineapig
+      MYSQL_PASSWORD: guineapig_dev
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./packages/guineapig-backend/sql:/docker-entrypoint-initdb.d:ro
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --max_connections=200
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-pguineapig_dev"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    logging: *default-logging
+    networks:
+      - guineapig-network
+
+  # ---------- Redis ----------
+  redis:
+    image: redis:7-alpine
+    container_name: guineapig-redis
+    <<: *common-env
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --requirepass guineapig_dev
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "guineapig_dev", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    logging: *default-logging
+    networks:
+      - guineapig-network
+
+  # ---------- MinIO (S3-compatible) ----------
+  minio:
+    image: minio/minio:latest
+    container_name: guineapig-minio
+    <<: *common-env
+    ports:
+      - "9000:9000"   # API
+      - "9001:9001"   # Console
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging: *default-logging
+    networks:
+      - guineapig-network
+
+# ============================================================
+# Application Services
+# ============================================================
+
+  # ---------- AI Agent ----------
+  aiagent:
+    build:
+      context: ./packages/guineapig-aiagent
+      dockerfile: Dockerfile
+    container_name: guineapig-aiagent
+    <<: *common-env
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./packages/guineapig-aiagent/.env
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: guineapig_dev
+      REDIS_DB: 0
+      MILVUS_HOST: ${MILVUS_HOST:-milvus-standalone}
+    volumes:
+      - ./packages/guineapig-aiagent:/app
+      - /app/.venv
+      - aiagent_data:/app/data
+      - aiagent_logs:/app/logs
+    depends_on:
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    develop:
+      watch:
+        - path: ./packages/guineapig-aiagent/app
+          action: sync
+        - path: ./packages/guineapig-aiagent/pyproject.toml
+          action: rebuild
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    logging: *default-logging
+    networks:
+      - guineapig-network
+    profiles:
+      - all
+      - aiagent
+
+  # ---------- Backend ----------
+  backend:
+    build:
+      context: ./packages/guineapig-backend
+      dockerfile: Dockerfile
+    container_name: guineapig-backend
+    <<: *common-env
+    ports:
+      - "6880:6880"
+    environment:
+      MYSQL_HOST: mysql:3306
+      MYSQL_USERNAME: guineapig
+      MYSQL_PASSWORD: guineapig_dev
+      REDIS_HOST: redis:6379
+      REDIS_PASSWORD: guineapig_dev
+      AIAGENT_BASE_URL: http://aiagent:8000
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-guineapig-admin-dev-token}
+      S3_BUCKET: guineapig
+      S3_REGION: default
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin
+    volumes:
+      - ./packages/guineapig-backend:/build
+      - backend_logs:/app/logs
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      aiagent:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:6880/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging: *default-logging
+    networks:
+      - guineapig-network
+    profiles:
+      - all
+      - backend
+
+  # ---------- Ops-Web (Frontend) ----------
+  frontend:
+    build:
+      context: ./packages/guineapig-ops-web
+      dockerfile: Dockerfile
+    container_name: guineapig-frontend
+    <<: *common-env
+    ports:
+      - "3000:80"
+    environment:
+      VITE_ADMIN_TOKEN: ${ADMIN_TOKEN:-guineapig-admin-dev-token}
+    depends_on:
+      backend:
+        condition: service_started
+    logging: *default-logging
+    networks:
+      - guineapig-network
+    profiles:
+      - all
+      - frontend
+
+# ============================================================
+# Volumes
+# ============================================================
+
+volumes:
+  mysql_data:
+  redis_data:
+  minio_data:
+  aiagent_data:
+  aiagent_logs:
+  backend_logs:
+
+# ============================================================
+# Networks
+# ============================================================
+
+networks:
+  guineapig-network:
+    driver: bridge

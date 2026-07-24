@@ -1,0 +1,62 @@
+# Default values for guineapig-backend.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+environment:
+  type: "dev"
+
+configmap:
+  enabled: false
+
+rbac:
+  enabled: false
+
+secret:
+  enabled: false
+
+securityContext:
+  enabled: false
+
+deployment:
+  name: guineapig-backend
+  replicaCount: 1
+  app: guineapig-backend
+  initContainer:
+    enabled: false
+  container:
+    name: guineapig-backend
+    image: ""
+    ports:
+    - name: http
+      containerPort: 6880
+      protocol: TCP
+    resources:
+      limits:
+        cpu: "1"
+        memory: 1Gi
+      requests:
+        cpu: "0.5"
+        memory: 512Mi
+    restartPolicy: Always
+    terminationGracePeriodSeconds: 30
+    dnsPolicy: ClusterFirst
+    imagePullPolicy: IfNotPresent
+  strategy:
+    maxUnavailable: 25%
+    maxSurge: 25%
+  revisionHistoryLimit: 10
+  progressDeadlineSeconds: 600
+
+affinity: {}
+nodeSelector: {}
+tolerations: []
+
+persistence: {}
+
+service:
+  name: guineapig-backend
+  type: ClusterIP
+  sessionAffinity: None
+
+ingress:
+  enabled: false

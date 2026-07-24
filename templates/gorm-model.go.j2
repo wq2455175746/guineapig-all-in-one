@@ -1,0 +1,69 @@
+// Code generated from template. DO NOT EDIT.
+// Package: guineapig-backend
+package model
+
+import (
+	"time"
+)
+
+// {{ .ModelName }} {{ .Description }}
+type {{ .ModelName }} struct {
+	ID        uint      `gorm:"primarykey" json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	{% if .HasDeletedAt -%}
+	DeletedAt gorm.DeletedAt `gorm:"index" json:"deleted_at,omitempty"`
+	{% endif -%}
+	{% for field in .Fields -%}
+	{{ field.Name }} {{ field.Type }} `gorm:"{{ field.GormTag }}" json:"{{ field.JsonTag }}"`
+	{% endfor %}
+}
+
+// TableName specifies the table name for {{ .ModelName }}
+func ({{ .ModelName }}) TableName() string {
+	return "{{ .TableName }}"
+}
+
+// {{ .ModelName }}M is the global model instance for {{ .ModelName }}
+var {{ .ModelName }}M = &{{ .ModelName }}Model{}
+
+// {{ .ModelName }}Model provides database operations for {{ .ModelName }}
+type {{ .ModelName }}Model struct{}
+
+// Create inserts a new {{ .ModelName }} record
+func (m *{{ .ModelName }}Model) Create(ctx context.Context, record *{{ .ModelName }}) error {
+	return plugin.GetDB(ctx).Create(record).Error
+}
+
+// GetByID retrieves a {{ .ModelName }} by ID
+func (m *{{ .ModelName }}Model) GetByID(ctx context.Context, id uint) (*{{ .ModelName }}, error) {
+	var record {{ .ModelName }}
+	err := plugin.GetDB(ctx).Where("id = ?", id).First(&record).Error
+	if err != nil {
+		return nil, err
+	}
+	return &record, nil
+}
+
+// List retrieves {{ .ModelName }} records with pagination
+func (m *{{ .ModelName }}Model) List(ctx context.Context, page, pageSize int) ([]{{ .ModelName }}, int64, error) {
+	var records []{{ .ModelName }}
+	var total int64
+
+	db := plugin.GetDB(ctx).Model(&{{ .ModelName }}{})
+	db.Count(&total)
+
+	offset := (page - 1) * pageSize
+	err := db.Offset(offset).Limit(pageSize).Order("id DESC").Find(&records).Error
+	return records, total, err
+}
+
+// Update modifies an existing {{ .ModelName }} record
+func (m *{{ .ModelName }}Model) Update(ctx context.Context, record *{{ .ModelName }}) error {
+	return plugin.GetDB(ctx).Save(record).Error
+}
+
+// Delete soft-deletes a {{ .ModelName }} record
+func (m *{{ .ModelName }}Model) Delete(ctx context.Context, id uint) error {
+	return plugin.GetDB(ctx).Delete(&{{ .ModelName }}{}, id).Error
+}

@@ -1,0 +1,283 @@
+{
+  "lessons": [
+    {
+      "id": "L001",
+      "date": "2026-05-21",
+      "type": "architecture",
+      "title": "Backend 不做 AI 操作，必须走 AIAgent",
+      "context": "guineapig-backend 只负责业务 CRUD，所有 ASR/TTS/LLM 调用统一由 guineapig-aiagent 处理",
+      "action": "backend 通过 HTTP/gRPC 调用 aiagent，不直接 import AI 相关库",
+      "tags": ["architecture", "layer-separation"]
+    },
+    {
+      "id": "L002",
+      "date": "2026-05-21",
+      "type": "pattern",
+      "title": "Echo 路由注册使用 init() 函数模式",
+      "context": "backend 使用 Echo v4，路由按资源分组注册",
+      "action": "每个资源目录下通过 init() 函数调用 router.AddGetRouter() 等注册路由",
+      "tags": ["go", "echo", "router"]
+    },
+    {
+      "id": "L003",
+      "date": "2026-05-21",
+      "type": "config",
+      "title": "配置文件使用 Viper + YAML + .env 分层",
+      "context": "backend 使用 config.yaml 定义结构，.env 提供环境相关值",
+      "action": "config.yaml 中使用 ${ENV_VAR} 占位符，由 os.ExpandEnv 替换",
+      "tags": ["go", "config", "viper"]
+    },
+    {
+      "id": "L004",
+      "date": "2026-05-21",
+      "type": "design",
+      "title": "语音对话采用非实时模式（MVP）",
+      "context": "初始版本不做实时对话，采用 上传音频 -> ASR 解析 -> LLM 驱动 -> TTS 生成的异步流程",
+      "action": "client 上传 MP3 到 S3 -> backend 创建任务 -> aiagent 消费任务执行 AI 循环",
+      "tags": ["product", "voice", "async"]
+    },
+    {
+      "id": "L005",
+      "date": "2026-05-21",
+      "type": "bugfix",
+      "title": "Python 脚本中 import 语句必须放在文件顶部",
+      "context": "check_quality.py 中 main() 函数使用了 re 模块，但在函数内临时 import 而不是文件顶部统一导入",
+      "action": "所有 Python 脚本的 import 语句统一放在文件顶部，函数内不做 import",
+      "tags": ["python", "lint", "import"]
+    },
+    {
+      "id": "L006",
+      "date": "2026-05-21",
+      "type": "config",
+      "title": "Electron builder 配置需要完整路径信息",
+      "context": "guineapig-client 初始化时 electron-builder.yml 缺少 icon 路径配置，导致构建失败",
+      "action": "electron-builder.yml 中必须配置完整的 icon/extraResources 路径，使用相对路径从 package 根目录开始",
+      "tags": ["electron", "build", "config"]
+    },
+    {
+      "id": "L007",
+      "date": "2026-05-27",
+      "type": "bugfix",
+      "title": "download_file_from_s3 必须传入文件路径而非目录路径",
+      "context": "oss_wrapper_utils.py 的 _download_single 使用 os.path.dirname 自动创建父目录，然后写入 local_path。传入目录路径时导致 [Errno 21] Is a directory 错误",
+      "action": "调用 download_file_from_s3 时 local_path 使用 os.path.join(dir, filename) 构造完整文件路径，不要传入目录路径",
+      "tags": ["python", "oss", "file-path"]
+    },
+    {
+      "id": "L008",
+      "date": "2026-05-27",
+      "type": "pattern",
+      "title": "Makefile foreach 中需要正确处理 cd 路径传递",
+      "context": "根 Makefile 的 validate/test/build-all 目标使用 foreach 遍历 package，cd 切换目录时需要 $$(ROOT_DIR) 转义以保留 shell 变量",
+      "action": "Makefile 中使用 @$(foreach ...) 时，内部 shell 变量用 $$VAR 转义，确保路径在多次 cd 后仍然正确",
+      "tags": ["makefile", "build", "shell"]
+    },
+    {
+      "id": "L009",
+      "date": "2026-06-01",
+      "type": "pattern",
+      "title": "API Key 使用 RSA 非对称加密传输",
+      "context": "前端用户配置 AI 模型的 API Key 需要安全传输到后端存储",
+      "action": "前端使用 JSEncrypt（公钥加密），后端使用 Go crypto/rsa（私钥解密），密钥对由后端生成并提供给前端。后端 pkg/utils/rsa.go 提供 Encrypt/Decrypt/GenerateKeyPair 三个函数",
+      "tags": ["security", "rsa", "encryption", "api-key"]
+    },
+    {
+      "id": "L010",
+      "date": "2026-06-01",
+      "type": "security",
+      "title": "前端解密需要 Node.js 内置 crypto 模块——Electron 主进程处理",
+      "context": "JSEncrypt 在浏览器环境正常工作，但在 guineapig-client 的 Vue 渲染进程中引用时可能因 Node.js 环境差异报错",
+      "action": "前端使用 npm 包 `jsencrypt`（基于 forge.js），在渲染进程（Vite 构建）中直接 import 使用。如果遇到 crypto 模块问题，移到主进程或使用 Web Crypto API 替代",
+      "tags": ["frontend", "electron", "crypto", "jsencrypt"]
+    },
+    {
+      "id": "L011",
+      "date": "2026-06-01",
+      "type": "bugfix",
+      "title": "GORM Updates 使用 map 而非 struct 更新零值字段",
+      "context": "UserAiModel.Update() 使用 struct 传递给 GORM Updates()，status=0 字段被忽略，导致前端开关状态无法重置为 0",
+      "action": "所有需要更新零值字段的场景，使用 `map[string]any` 替代 struct 传递给 GORM Updates()。map 会保留所有键值对，不受零值影响。注意 api_key 字段条件性包含以避免覆盖已存储的加密密钥",
+      "tags": ["gorm", "go", "zero-value", "orm"]
+    },
+    {
+      "id": "L012",
+      "date": "2026-06-01",
+      "type": "design",
+      "title": "列表 API 敏感字段掩码与编辑表单的交互设计",
+      "context": "List API 返回 api_key 为 \"***\"，前端编辑时回填到表单，保存时 \"***\" 被发送到后端覆盖了真实密钥",
+      "action": "编辑表单中敏感字段（api_key）显示掩码值 + 可选更换按钮。提交时判断：如果用户未修改掩码字段，则后端不更新该字段（GORM 有条件跳过）。后端 service 层通过判断请求中 api_key 是否为空或掩码来决定是否更新",
+      "tags": ["design", "api", "security", "frontend"]
+    },
+    {
+      "id": "L013",
+      "date": "2026-06-23",
+      "type": "pattern",
+      "title": "RAG Embedding 流水线架构：Chunking -> Vectorization -> Milvus",
+      "context": "知识库文件需要经过文本分块（TextChunker）、向量化（embedding model）、写入 Milvus 三个步骤，全在 aiagent 侧完成",
+      "action": "aiagent 的 RAG 服务层实现清晰的三阶段流水线：TextChunker 分割文本、embedding 模型向量化、Milvus 批量写入。前端通过 WebSocket 展示进度",
+      "tags": ["rag", "embedding", "milvus", "aiagent"]
+    },
+    {
+      "id": "L014",
+      "date": "2026-06-24",
+      "type": "bugfix",
+      "title": "Vue 非响应式变量在异步流程中的竞态条件",
+      "context": "ChatPage.vue 中 currentConvId 是普通 let 变量（非 Vue ref），被 chat.done 事件在 SSE 流结束时重置为 0，但 executeCommands 异步流程仍需要该 ID",
+      "action": "引入 pendingConvId 辅助变量在 command handler 阶段提前保存 conversation ID，在 chat.done 重置 currentConvId 前已将 ID 持久化。或者将 currentConvId 改为 Vue ref() 响应式变量",
+      "tags": ["vue", "race-condition", "async", "websocket"]
+    },
+    {
+      "id": "L015",
+      "date": "2026-06-24",
+      "type": "bugfix",
+      "title": "Go SSE reader 在首个 done 事件退出流，破坏 ReAct 多轮循环",
+      "context": "Go 后端 chat_hub.go 的 proxyAiAgentStream 函数读取 Python SSE 流时，遇到首个 data: [DONE] 就直接退出循环，但 Python 的 ReAct loop 会输出多个 done 事件（每轮一次）",
+      "action": "SSE reader 需要区分 '流结束' 和 '轮次结束'：遇到 done 事件时只标记轮次完成，不关闭 SSE 连接。需要等待特定的流终结事件（如 stream_end）才退出读取循环",
+      "tags": ["go", "sse", "react", "websocket", "streaming"]
+    },
+    {
+      "id": "L016",
+      "date": "2026-06-24",
+      "type": "pattern",
+      "title": "PipelineSession 恢复机制从 Redis Pub/Sub 迁移到 BLPOP/LPUSH",
+      "context": "AiAgent PipelineSession 需要在命令执行后恢复对话流程，原使用 Redis Pub/Sub 方式，但 Pub/Sub 的订阅机制在 session 场景下有缺陷",
+      "action": "改用 Redis List 的 BLPOP（阻塞弹出）和 LPUSH（左侧推入）实现 session 恢复。命令执行完成后将结果 push 到 list，LLM 线程 BLPOP 阻塞等待。更简单可靠，无需管理订阅",
+      "tags": ["python", "redis", "blpop", "pipeline", "pubsub"]
+    },
+    {
+      "id": "L017",
+      "date": "2026-06-24",
+      "type": "design",
+      "title": "命令行触发和执行结果返回使用 SSE 中间事件转发而非 HTTP 回查",
+      "context": "Command execution 结果需要从 Electron IPC 回到 AiAgent LLM 流程，原有 HTTP fallback 但存在 currentConvId 丢失问题",
+      "action": "通过 WebSocket 通道：Go 后端在 SSE 流中拦截 <commands> 标签并作为 WSEnvelope.Commands 事件转发给客户端 -> 客户端执行 -> 结果通过 WS 送回 Go 后端 -> Go 后端通过命令事件标记触发 BLPOP 让 AiAgent 继续。全链路 SSE/WS，不需要额外的 HTTP 端点",
+      "tags": ["architecture", "websocket", "commands", "sse"]
+    },
+    {
+      "id": "L018",
+      "date": "2026-06-24",
+      "type": "design",
+      "title": "Multi-Message 架构：每轮 ReAct 生成独立消息而非拼接到同一消息",
+      "context": "单流 SSE 架构中，LLM 多轮 ReAct 的输出和 commands 都拼接到同一 chat message，导致命令对话框重复触发、前端难以区分轮次",
+      "action": "每个 ReAct 轮次生成独立 SSE 消息（message_id 唯一），通过 ParentMessageId 建立消息树。Go 后端 SSE 代理支持多轮 done 事件，每个 done 代表一个轮次结束。前端按消息 ID 展示每轮输出，commands 绑定到具体轮次",
+      "tags": ["architecture", "design", "sse", "react", "websocket"]
+    },
+    {
+      "id": "L019",
+      "date": "2026-06-24",
+      "type": "pattern",
+      "title": "commandsForwardedAsEvent 防重标志避免命令重复转发",
+      "context": "SSE 流中 commands 既在轮次中以事件形式转发给客户端，又在 done 事件 payload 中携带。导致客户端收到两次相同命令，触发重复对话框",
+      "action": "Go 后端 proxyAiAgentStream 增加 commandsForwardedAsEvent bool 标志。在 SSE 流中遇到 commands 标签时，以事件形式转发一次并设置标志；在 done 事件中，如果标志已设置则跳过 commands 转发。利用 Go 闭包捕获状态",
+      "tags": ["go", "sse", "dedup", "state-tracking"]
+    },
+    {
+      "id": "L020",
+      "date": "2026-06-25",
+      "type": "pattern",
+      "title": "Make validate 脚本需要校验 harness 文件的完整性",
+      "context": "make validate 可以通过但 harness 文件（如 CURRENT_FOCUS、lessons.json）已过期，需要补充自检能力",
+      "action": "validate.py 应增加 harness 文件时效性检查：CURRENT_FOCUS 的最后更新日期是否距今超过 2 周、lessons.json 是否有最近的工作记录。在 validation pipeline 中发出警告",
+      "tags": ["harness", "validate", "automation"]
+    },
+    {
+      "id": "L021",
+      "date": "2026-06-29",
+      "type": "bugfix",
+      "title": "async_generator 不能用同步 for 迭代，必须用 async for",
+      "context": "llm.py 中 Pipeline.run_and_yield 是 async generator，被同步 for _ in run_and_yield() 在 SSE 端点中调用，触发 TypeError: 'async_generator' object is not iterable",
+      "action": "SSE 流式端点从同步 for 改为 async for，或将异步生成器包装为异步流。生成器函数中 yield 前必须有至少一个 await 点，否则 Python 视作普通生成器",
+      "tags": ["python", "async", "generator", "sse", "bugfix"]
+    },
+    {
+      "id": "L022",
+      "date": "2026-06-29",
+      "type": "bugfix",
+      "title": "Python GeneratorExit 在 finally 块中不能 yield",
+      "context": "agent.py SSE 流中 async generator 被 GC 回收时触发 GeneratorExit，在 finally 块中执行 yield 抛出 GeneratorExit 异常",
+      "action": "finally 块中不执行 yield。如果需要清理，使用 try/finally + except GeneratorExit 分离处理，或在 generator 被 close() 前确保不再 yield",
+      "tags": ["python", "async", "generator", "generator-exit", "bugfix"]
+    },
+    {
+      "id": "L023",
+      "date": "2026-06-29",
+      "type": "bugfix",
+      "title": "session_id 格式不一致导致 Go backend→Python aiagent 的 conversation_id 丢失",
+      "context": "Go backend 发送给 aiagent 的 session_id 格式与 aiagent 期望的格式不匹配，导致 Python 端 Parse 失败，conversation_id 始终为 0",
+      "action": "在 aiagent agent.py 中添加 _parse_conversation_id() 统一解析入口，兼容多种 session_id 格式，确保 conversation_id 正确传递",
+      "tags": ["python", "go", "session_id", "sse", "bugfix"]
+    },
+    {
+      "id": "L024",
+      "date": "2026-06-29",
+      "type": "pattern",
+      "title": "OTel 指标使用 UPSERT + Redis TTL 替代 Del() 旧模式",
+      "context": "旧模式: Python HINCRBY→Redis → backend SCAN sync → rdb.Del() 删除。同步间隔中如果新指标写入会丢失。新模式: UPSERT (JSON_SET 原子累加) + 2天TLL Redis key 自动过期",
+      "action": "Redis key 不手动删除，设 2 天 TTL 自动过期。MySQL 使用 INSERT ... ON DUPLICATE KEY UPDATE 实现原子 UPSERT，不丢失任何指标数据。Go 侧并发安全：GORM Raw SQL + JSON_SET 原子累加当前值",
+      "tags": ["otlp", "redis", "mysql", "upsert", "ttl"]
+    },
+    {
+      "id": "L025",
+      "date": "2026-06-29",
+      "type": "pattern",
+      "title": "go-redis v9.16.0 不支持 DisableAutoConfig，使用 DisableIdentity 替代",
+      "context": "Asynq 启动时 Redis 报 CLIENT MAINT_NOTIFICATIONS 警告，试了 DisableAutoConfig（不存在）导致编译失败。正确字段是 DisableIdentity",
+      "action": "go-redis v9.16.0 中 Redis 连接选项使用 DisableIdentity: true 替代不存在的 DisableAutoConfig: true，抑制 CLIENT MAINT_NOTIFICATIONS 警告",
+      "tags": ["go", "redis", "asynq", "go-redis"]
+    },
+    {
+      "id": "L026",
+      "date": "2026-06-29",
+      "type": "performance",
+      "title": "Agent TRIVIAL 路径应在 CapabilityRegistry.scan 前短路",
+      "context": "TRIVIAL（问候/闲聊）问题仍会执行 CapabilityRegistry.scan()（MCP 工具列表扫描），这是昂贵的操作（涉及外部 MCP 服务器调用），对 TRIVIAL 完全不需要",
+      "action": "在 _run_intent_pipeline 入口处先执行 QuickFilter 判断意图类型，如果是 TRIVIAL 则立即调用 _direct_llm_stream() 返回 SSE 流，跳过 CapabilityRegistry.scan() 和所有后续 Pipeline 阶段",
+      "tags": ["performance", "agent", "pipeline", "optimization"]
+    },
+    {
+      "id": "L027",
+      "date": "2026-07-06",
+      "type": "pattern",
+      "title": "Backend Health 端点需注册在 Auth 中间件之前",
+      "context": "Docker HEALTHCHECK 和 K8s liveness/readiness probe 需要无认证的健康检查端点，Auth 中间件拦截后 probe 请求返回 401",
+      "action": "Echo 路由注册时，`/health` 和 `/api/v1/health` 放在 `e.Use(authMiddleware)` 之前注册，确保无需 Token 即可访问，返回 JSON {\"status\":\"ok\",\"time\":...}",
+      "tags": ["go", "echo", "docker", "kubernetes", "healthcheck"]
+    },
+    {
+      "id": "L028",
+      "date": "2026-07-06",
+      "type": "pattern",
+      "title": "Cross-channel 用户配置用 Redis Hash 做缓存",
+      "context": "Client 端每次 chat 携带 modelId/webSearchEnabled/agent_mode，但 Feishu Bot 消息没有这些参数，只能使用用户第一个可用模型",
+      "action": "使用 Redis Hash `chat:config:{user_id}` 做跨渠道配置缓存：Client chat 时 HSet 保存，Bot 消息时 HGetAll 读取。Redis 不可用时 GetUserChatConfig 返回零值，SyncChatMessage 降级到 loadDefaultModelConfig",
+      "tags": ["redis", "cache", "cross-channel", "feishu", "config"]
+    },
+    {
+      "id": "L029",
+      "date": "2026-07-06",
+      "type": "pattern",
+      "title": "Helm Chart 模板复用模式：values.yaml + environment-specific values",
+      "context": "三个服务（backend/aiagent/ops-web）需要部署到 dev/test/pre/release 四个环境，每个环境配置不同",
+      "action": "每个 Chart 使用默认 values.yaml（基础配置），各环境使用 values-{env}.yaml（覆盖差异）。模板共享 deployment/service/configmap/secret/ingress/pvc/rbac。ConfigMap 挂载通过 checksum/config 注解触发滚动更新",
+      "tags": ["helm", "kubernetes", "deployment", "template"]
+    },
+    {
+      "id": "L030",
+      "date": "2026-07-06",
+      "type": "pattern",
+      "title": "Nginx 反向代理到 backend 时 nginx.conf 通过 ConfigMap 挂载",
+      "context": "Ops-web 作为 nginx 静态服务，需要反向代理 API 请求到 backend（包括 WebSocket），且 proxy_pass 地址在 K8s 中使用 Service 名",
+      "action": "nginx.conf 作为 ConfigMap data 嵌入，通过 volume mount 挂载到 /etc/nginx/conf.d/default.conf（subPath 避免覆盖其他配置）。WebSocket 需要额外配置：proxy_http_version 1.1 + Upgrade/Connection header + 3600s read_timeout",
+      "tags": ["nginx", "kubernetes", "configmap", "websocket", "reverse-proxy"]
+    },
+    {
+      "id": "L031",
+      "date": "2026-07-06",
+      "type": "pattern",
+      "title": "Go 静态编译避免 libc 依赖",
+      "context": "Dockerfile 使用 docker.io/library/golang:1.24-alpine 构建，部署到 docker.io/library/alpine:3.19 运行时环境",
+      "action": "使用 CGO_ENABLED=0 GOOS=linux 静态编译，生成的二进制不依赖 glibc/musl，可以在任意 Linux 发行版运行。GOARCH=amd64 明确目标架构",
+      "tags": ["go", "docker", "static-build", "cgo"]
+    }
+  ]
+}

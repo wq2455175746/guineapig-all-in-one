@@ -1,0 +1,32 @@
+{
+  "service": "all",
+  "task_id": "infrastructure-and-deployment",
+  "task_name": "基础设施完善：Docker + Helm + 部署配置",
+  "status": "in_progress",
+  "started_at": "2026-07-06",
+  "description": "完善项目基础设施：Dockerfile 多阶段构建、docker-compose 开发/生产环境、Helm Charts 部署、Makefile 标准化、.ai harness 文件同步更新",
+  "milestones": {
+    "Dockerfile 多阶段构建": "2026-07-06",
+    "docker-compose 开发/生产环境": "2026-07-06",
+    "Redis 用户聊天配置缓存 (Feishu Bot 模型选择)": "2026-07-06",
+    "Helm Charts 三服务部署": "2026-07-06",
+    ".ai harness 文件全面更新": "2026-07-06"
+  },
+  "completed_tasks": [
+    "guineapig-backend/aiagent/ops-web Dockerfile 多阶段构建 + HEALTHCHECK",
+    "docker-compose.yml (dev) + docker-compose.prod.yml",
+    "Backend /health + /api/v1/health 端点 (前置 Auth 中间件)",
+    "Root Makefile docker-build/docker-push/docker-up/docker-down 目标",
+    "Redis user_chat_config.go (SetUserChatConfig / GetUserChatConfig)",
+    "SyncChatMessage 读取 Redis 配置 + 回退到 loadDefaultModelConfig",
+    "Helm Charts: backend/aiagent/ops-web 三服务 charts (dev/test/pre/release values)",
+    "ops-web nginx.conf ConfigMap 挂载 + backend config.yaml ConfigMap 挂载",
+    "AiAgent PVC 挂载 /app/data 用于技能数据"
+  ],
+  "next_tasks": [
+    "添加 Makefile 中 Helm deploy/undeploy 目标",
+    "CI/CD pipeline 配置 (GitHub Actions / GitLab CI)",
+    "生产环境就绪性检查清单"
+  ],
+  "updated_at": "2026-07-10T19:08:10.944835"
+}

@@ -1,0 +1,60 @@
+# Default values for guineapig-ops-web.
+
+environment:
+  type: "dev"
+
+configmap:
+  enabled: false
+
+rbac:
+  enabled: false
+
+secret:
+  enabled: false
+
+securityContext:
+  enabled: false
+
+deployment:
+  name: guineapig-ops-web
+  replicaCount: 1
+  app: guineapig-ops-web
+  initContainer:
+    enabled: false
+  container:
+    name: guineapig-ops-web
+    image: ""
+    ports:
+    - name: http
+      containerPort: 80
+      protocol: TCP
+    resources:
+      limits:
+        cpu: "0.2"
+        memory: 256Mi
+      requests:
+        cpu: "0.1"
+        memory: 128Mi
+    restartPolicy: Always
+    terminationGracePeriodSeconds: 30
+    dnsPolicy: ClusterFirst
+    imagePullPolicy: IfNotPresent
+  strategy:
+    maxUnavailable: 25%
+    maxSurge: 25%
+  revisionHistoryLimit: 10
+  progressDeadlineSeconds: 600
+
+affinity: {}
+nodeSelector: {}
+tolerations: []
+
+persistence: {}
+
+service:
+  name: guineapig-ops-web
+  type: ClusterIP
+  sessionAffinity: None
+
+ingress:
+  enabled: false

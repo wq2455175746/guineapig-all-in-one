@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+.git/
+.ai/
+.idea/
+.DS_Store
+*.log
+logs/
+
+# Build artifacts
+dist/
+
+# Source maps
+*.map
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Git
+.gitignore
+README.md
+
+# IDE
+.vscode/
+*.swp
+*.swo
+*~

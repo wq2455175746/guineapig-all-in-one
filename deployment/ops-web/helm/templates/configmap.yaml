@@ -1,0 +1,15 @@
+{{- if .Values.configmap.enabled -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.configmap.name }}
+data:
+  {{- range $filename, $content := .Values.configmap.files }}
+  {{ $filename }}: |
+    {{- if kindIs "map" $content }}
+    {{- toYaml $content | nindent 4 }}
+    {{- else }}
+    {{- tpl $content $ | nindent 4 }}
+    {{- end }}
+  {{- end }}
+{{- end }}

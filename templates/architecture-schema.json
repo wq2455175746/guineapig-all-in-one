@@ -1,0 +1,141 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://guineapig.local/schemas/architecture.json",
+  "title": "GuineaPig Architecture Schema",
+  "description": "Schema for validating architecture decisions and design docs",
+  "definitions": {
+    "package": {
+      "type": "object",
+      "required": ["name", "techStack", "dependencies", "ports"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "enum": ["guineapig-backend", "guineapig-aiagent", "guineapig-ops-web", "guineapig-client"]
+        },
+        "techStack": {
+          "type": "object",
+          "required": ["language", "framework"],
+          "properties": {
+            "language": { "type": "string" },
+            "framework": { "type": "string" },
+            "database": { "type": "string" },
+            "cache": { "type": "string" }
+          }
+        },
+        "dependencies": {
+          "type": "array",
+          "description": "Packages this service depends on (never reverse)",
+          "items": { "$ref": "#/definitions/package/properties/name" }
+        },
+        "ports": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["port", "protocol"],
+            "properties": {
+              "port": { "type": "integer" },
+              "protocol": { "type": "string", "enum": ["HTTP", "gRPC", "WebSocket"] },
+              "description": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "apiEndpoint": {
+      "type": "object",
+      "required": ["method", "path", "handler"],
+      "properties": {
+        "method": { "type": "string", "enum": ["GET", "POST", "PUT", "DELETE", "PATCH"] },
+        "path": { "type": "string" },
+        "handler": { "type": "string" },
+        "auth": { "type": "boolean", "default": true },
+        "rateLimit": {
+          "type": "object",
+          "properties": {
+            "qps": { "type": "number" },
+            "concurrency": { "type": "number" }
+          }
+        },
+        "request": { "$ref": "#/definitions/apiEndpoint" },
+        "response": { "$ref": "#/definitions/apiEndpoint" }
+      }
+    },
+    "designDoc": {
+      "type": "object",
+      "required": ["title", "status", "created", "sections"],
+      "properties": {
+        "title": { "type": "string" },
+        "status": { "type": "string", "enum": ["draft", "review", "approved", "implemented"] },
+        "created": { "type": "string", "format": "date" },
+        "author": { "type": "string" },
+        "package": { "$ref": "#/definitions/package/properties/name" },
+        "sections": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["heading", "content"],
+            "properties": {
+              "heading": { "type": "string" },
+              "content": { "type": "string" }
+            }
+          }
+        }
+      }
+    }
+  },
+  "architecture": {
+    "packages": [
+      {
+        "name": "guineapig-backend",
+        "techStack": {
+          "language": "Go 1.24.0",
+          "framework": "Echo v4",
+          "database": "MySQL (GORM)",
+          "cache": "Redis (go-redis)"
+        },
+        "dependencies": ["guineapig-aiagent"],
+        "ports": [
+          { "port": 8080, "protocol": "HTTP", "description": "REST API" }
+        ]
+      },
+      {
+        "name": "guineapig-aiagent",
+        "techStack": {
+          "language": "Python 3.11+",
+          "framework": "FastAPI"
+        },
+        "dependencies": [],
+        "ports": [
+          { "port": 8000, "protocol": "HTTP", "description": "AI Agent API" },
+          { "port": 50051, "protocol": "gRPC", "description": "gRPC service" }
+        ]
+      },
+      {
+        "name": "guineapig-ops-web",
+        "techStack": {
+          "language": "JavaScript",
+          "framework": "Vue 3 + Vite + Element Plus"
+        },
+        "dependencies": ["guineapig-backend"],
+        "ports": [
+          { "port": 3000, "protocol": "HTTP", "description": "Dev server" }
+        ]
+      },
+      {
+        "name": "guineapig-client",
+        "techStack": {
+          "language": "JavaScript",
+          "framework": "Electron + Vue 3"
+        },
+        "dependencies": ["guineapig-backend"],
+        "ports": []
+      }
+    ],
+    "externalServices": [
+      { "name": "MySQL", "usedBy": ["guineapig-backend"] },
+      { "name": "Redis", "usedBy": ["guineapig-backend", "guineapig-aiagent"] },
+      { "name": "S3/MinIO", "usedBy": ["guineapig-client", "guineapig-aiagent"] },
+      { "name": "DeepSeek API", "usedBy": ["guineapig-aiagent"] }
+    ]
+  }
+}

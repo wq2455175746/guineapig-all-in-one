@@ -1,0 +1,32 @@
+port: 6880
+version: 1.0
+debug: true
+jwtSecret: dmxaitest
+database:
+  autoMigrate: false
+  driver: mysql
+  source: ${MYSQL_USERNAME}:${MYSQL_PASSWORD}@tcp(${MYSQL_HOST})/guineapig?parseTime=true&charset=utf8mb4&loc=Local
+rsa:
+  privateKey: "private.key"
+redis:
+  addr: ${REDIS_HOST}
+#  addr: 127.0.0.1:7000
+  password: ${REDIS_PASSWORD}
+  db: 0
+admin:
+  token: ${ADMIN_TOKEN}
+
+aiAgent:
+  baseUrl: ${AIAGENT_BASE_URL}
+
+s3:
+  bucket: ${S3_BUCKET}
+  region: ${S3_REGION}
+  endpoint: ${S3_ENDPOINT}
+  accessKey: ${S3_ACCESS_KEY}
+  secretKey: ${S3_SECRET_KEY}
+  presignExpiryMinute: 15
+  forcePathStyle: true
+
+rateLimiter:
+  botQps: 5

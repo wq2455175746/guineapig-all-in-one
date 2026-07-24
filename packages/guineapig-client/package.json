@@ -1,0 +1,98 @@
+{
+  "name": "guineapig-client",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "main": "dist/electron/index.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc && vite build",
+    "electron:dev": "npm run dev",
+    "electron:start": "electron .",
+    "electron:build": "vue-tsc && vite build && electron-builder"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.13.1",
+    "@electron-toolkit/preload": "^3.0.2",
+    "@primevue/themes": "^4.3.0",
+    "archiver": "^8.0.0",
+    "crypto-js": "^4.2.0",
+    "echarts": "^5.5.0",
+    "jsencrypt": "^3.5.4",
+    "lamejs": "^1.2.1",
+    "markdown-it": "^14.2.0",
+    "node-machine-id": "^1.1.12",
+    "primeicons": "^7.0.0",
+    "primevue": "^4.3.0",
+    "vue": "^3.5.34",
+    "vue-router": "^4.6.4"
+  },
+  "devDependencies": {
+    "@types/archiver": "^8.0.0",
+    "@types/crypto-js": "^4.2.2",
+    "@types/markdown-it": "^14.1.2",
+    "@types/node": "^24.12.3",
+    "@vitejs/plugin-vue": "^6.0.6",
+    "@vue/tsconfig": "^0.9.1",
+    "electron": "^42.3.0",
+    "electron-builder": "^26.8.1",
+    "typescript": "~6.0.2",
+    "vite": "^8.0.12",
+    "vite-plugin-electron": "^0.29.1",
+    "vue-tsc": "^3.2.8"
+  },
+  "build": {
+    "appId": "com.guineapig.client",
+    "productName": "guineapig-client",
+    "directories": {
+      "output": "dist/release"
+    },
+    "electronDownload": {
+      "cache": ".electron-cache"
+    },
+    "files": [
+      "dist/electron/**/*",
+      "dist/preload/**/*",
+      "dist/renderer/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "public/",
+        "to": "public/",
+        "filter": ["*.key", "*.js"]
+      }
+    ],
+    "asar": true,
+    "asarUnpack": [
+      "node_modules/archiver",
+      "node_modules/node-machine-id",
+      "node_modules/@modelcontextprotocol/sdk"
+    ],
+    "mac": {
+      "target": [
+        { "target": "zip", "arch": ["arm64", "x64"] },
+        { "target": "dmg", "arch": ["arm64", "x64"] }
+      ],
+      "icon": "public/icon.icns",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false
+    },
+    "win": {
+      "target": "nsis",
+      "icon": "public/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "installerIcon": "public/icon.ico",
+      "uninstallerIcon": "public/icon.ico"
+    },
+    "linux": {
+      "target": ["AppImage", "deb"],
+      "icon": "public/icon.png",
+      "category": "Utility"
+    }
+  }
+}

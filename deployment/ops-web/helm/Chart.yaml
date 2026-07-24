@@ -1,0 +1,5 @@
+apiVersion: v2
+name: guineapig-ops-web
+description: A Helm chart for guineapig-ops-web (Vue + Nginx)
+version: 0.1.0
+appVersion: "1.0.0"

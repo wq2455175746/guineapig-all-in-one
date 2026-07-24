@@ -1,0 +1,25 @@
+{{- range $name, $config := .Values.persistence }}
+{{- if and $config.enabled (eq $config.type "pvc") (not $config.existingClaim) }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ printf "%s-%s-pvc" $.Values.deployment.name $name | trunc 63 | trimSuffix "-" }}
+  labels:
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/instance: {{ include "release.name" $ }}
+  annotations:
+    helm.sh/resource-policy: keep
+    meta.helm.sh/release-name: {{ include "release.name" $ }}
+    meta.helm.sh/release-namespace: {{ include "release.namespace" $ }}
+spec:
+  {{- if $config.pvc.storageClass }}
+  storageClassName: {{ $config.pvc.storageClass }}
+  {{- end }}
+  accessModes:
+    - {{ $config.pvc.accessMode | default "ReadWriteOnce" }}
+  resources:
+    requests:
+      storage: {{ $config.pvc.size | default "1Gi" }}
+{{- end }}
+{{- end }}
