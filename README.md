@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://via.placeholder.com/200x200/1a1a2e/e94560?text=GP" alt="GuineaPig Logo" width="120" height="120" style="border-radius: 20px;">
+  <img src="other/img3.png" alt="GuineaPig Desktop Client" width="560" style="border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
 </p>
 
 <h1 align="center">🐹 GuineaPig All-in-One</h1>
@@ -21,6 +21,7 @@
 ## 📋 目录
 
 - [项目介绍](#-项目介绍)
+- [效果展示](#-效果展示)
 - [技术架构](#-技术架构)
 - [核心能力](#-核心能力)
 - [快速开始](#-快速开始)
@@ -43,6 +44,27 @@
 | **运维人员** | 通过运营管理后台（ops-web）管理用户、监控系统 |
 | **开发者** | 集成 AI Agent、扩展自定义 Skill、部署到 Kubernetes |
 | **团队** | 多用户语音对话系统，支持 IM Bot 集成 |
+
+---
+
+## 📸 效果展示
+
+<div align="center">
+  <table>
+    <tr>
+      <td width="50%" align="center">
+        <img src="other/img3.png" alt="桌面客户端 - Agent模式" width="95%" style="border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.12);">
+        <br><em>桌面客户端 - Agent模式</em>
+      </td>
+      <td width="50%" align="center">
+        <img src="other/img4.png" alt="桌面客户端 - 普通模式" width="95%" style="border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.12);">
+        <br><em>桌面客户端 - 普通模式</em>
+      </td>
+    </tr>
+  </table>
+
+  <p>更多界面截图请查看 <a href="other/"><code>other/</code></a> 目录。</p>
+</div>
 
 ---
 
