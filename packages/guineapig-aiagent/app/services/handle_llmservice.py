@@ -102,6 +102,7 @@ async def get_llm_response_stream(
     model_name: str,
     temperature: float = 0.7,
     max_tokens: int = 2048,
+    trace_id: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """
     流式 LLM 调用 — 使用调用方传入的动态模型参数，逐 chunk 产出内容。
@@ -130,9 +131,11 @@ async def get_llm_response_stream(
     langfuse_gen = None
     if is_langfuse_enabled():
         langfuse = get_langfuse()
+        trace_ctx = {"trace_id": trace_id} if trace_id else None
         langfuse_gen = langfuse.start_observation(
             name="llm-stream-chat",
             as_type="generation",
+            trace_context=trace_ctx,
             model=model_name,
             input=messages,
             metadata={"source": "handle_llmservice.get_llm_response_stream"},

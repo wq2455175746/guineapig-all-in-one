@@ -13,8 +13,6 @@ import json
 
 from openai import OpenAI
 
-from langfuse import observe
-
 from app.config import settings
 from app.core.log import logger
 from app.services.langfuse_client import get_langfuse, is_langfuse_enabled
@@ -35,13 +33,13 @@ class DeepAnalyzer:
         return client, settings.LLM_MODEL_NAME
 
     @classmethod
-    @observe(as_type="generation", name="deep_analyzer")
     def analyze(
         cls,
         user_message: str,
         capability_inventory: CapabilityInventory | None = None,
         conversation_history: list[dict] | None = None,
         capabilities_formatted: str = "",
+        trace_id: str | None = None,
     ) -> DeepAnalysisResult:
         """
         执行一次非流式 LLM 调用，返回结构化意图分析结果。
@@ -104,6 +102,7 @@ class DeepAnalyzer:
                 langfuse_gen = langfuse.start_observation(
                     name="deep-analyzer-llm",
                     as_type="generation",
+                    trace_context={"trace_id": trace_id} if trace_id else None,
                     model=model_name,
                     input={
                         "system": DEEP_ANALYZER_SYSTEM[:200],

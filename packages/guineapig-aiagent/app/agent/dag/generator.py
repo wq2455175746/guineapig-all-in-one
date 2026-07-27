@@ -7,7 +7,6 @@ DAG 生成器 — 根据 LLM 意图分析结果 + 能力清单，生成可执行
 
 import json
 
-from langfuse import observe
 from openai import OpenAI
 
 from app.config import settings
@@ -40,12 +39,12 @@ class DAGGenerator:
         return client, settings.LLM_MODEL_NAME
 
     @classmethod
-    @observe(as_type="generation", name="dag_generator")
     def generate(
         cls,
         deep_analysis: DeepAnalysisResult,
         capability_inventory: CapabilityInventory | None = None,
         capabilities_formatted: str = "",
+        trace_id: str | None = None,
     ) -> DAGDefinition:
         """
         根据意图分析结果生成 DAG。
@@ -110,6 +109,7 @@ class DAGGenerator:
                 langfuse_gen = langfuse.start_observation(
                     name="dag-generator-llm",
                     as_type="generation",
+                    trace_context={"trace_id": trace_id} if trace_id else None,
                     model=model_name,
                     input={
                         "system": DAG_GENERATOR_SYSTEM[:200],

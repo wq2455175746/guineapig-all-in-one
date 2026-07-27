@@ -128,10 +128,17 @@ class AgentChatRequest(BaseModel):
 # ═══════════════════════════════════════════════════
 
 
-async def _run_intent_pipeline(request: AgentChatRequest) -> dict:
+async def _run_intent_pipeline(
+    request: AgentChatRequest,
+    trace_id: str | None = None,
+) -> dict:
     """
     执行完整意图识别 Pipeline (Phase 0-3) + DAG 生成。
     集成 Langfuse Trace：整个 Pipeline 作为一条 Trace 追踪。
+
+    Args:
+        request: Agent 聊天请求
+        trace_id: Langfuse trace ID，用于 start_observation 的 trace_context 关联
 
     Returns:
         dict 包含所有阶段的结果:
@@ -211,6 +218,7 @@ async def _run_intent_pipeline(request: AgentChatRequest) -> dict:
             capability_inventory=inventory,
             conversation_history=request.conversation_history,
             capabilities_formatted=capabilities_formatted,
+            trace_id=trace_id,
         )
         # 估算 DeepAnalyzer LLM 调用 token
         analysis_input = capabilities_formatted + " " + message
@@ -246,6 +254,7 @@ async def _run_intent_pipeline(request: AgentChatRequest) -> dict:
             deep_analysis=deep_analysis,
             capability_inventory=inventory,
             capabilities_formatted=capabilities_formatted,
+            trace_id=trace_id,
         )
         # 估算 DAGGenerator LLM 调用 token
         dag_input = (
@@ -319,6 +328,7 @@ async def _stream_execution_summary(
     user_id: int = 0,
     session_id: str = "",
     scene_memory: list[dict] | None = None,
+    trace_id: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """
     DAG 执行完成后，调用 LLM 生成自然语言总结，以 content SSE 事件流式输出。
@@ -366,6 +376,7 @@ async def _stream_execution_summary(
         langfuse_gen = langfuse.start_observation(
             name="stream-execution-summary",
             as_type="generation",
+            trace_context={"trace_id": trace_id} if trace_id else None,
             model=model_name,
             input={"system": system_prompt[:200], "user": human_prompt[:500]},
             metadata={"source": "agent._stream_execution_summary"},
@@ -432,6 +443,7 @@ async def _direct_llm_stream(
     extra_input_tokens: int = 0,
     extra_output_tokens: int = 0,
     scene_memory: list[dict] | None = None,
+    trace_id: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """无需 DAG 执行时，直接调用 LLM 流式回复并输出 SSE 事件。
 
@@ -471,6 +483,7 @@ async def _direct_llm_stream(
         langfuse_gen = langfuse.start_observation(
             name="direct-llm-stream",
             as_type="generation",
+            trace_context={"trace_id": trace_id} if trace_id else None,
             model=model_name,
             input={"system": system_prompt[:200], "user": user_message[:500]},
             metadata={"source": "agent._direct_llm_stream"},
@@ -568,7 +581,6 @@ async def agent_chat(request: AgentChatRequest):
 
 
 @router.post("/chat/stream")
-@observe(name="agent_chat_stream")
 async def agent_chat_stream(request: AgentChatRequest):
     """
     Agent SSE 流式入口 — 执行完整 Pipeline 并流式推送执行进度。
@@ -598,255 +610,303 @@ async def agent_chat_stream(request: AgentChatRequest):
             f"message='{message[:50]}...'"
         )
 
-        # ── Phase 0-3: 意图识别 + DAG 生成 ──
-        pipeline_result = await _run_intent_pipeline(request)
-        quick_result = pipeline_result["quick_result"]
-        decision = pipeline_result["decision"]
-        dag = pipeline_result["dag"]
-        inventory = pipeline_result["inventory"]
-        deep_analysis = pipeline_result.get("deep_analysis")
+        # ── Unified Streaming Generator ──
+        # 所有逻辑（Pipeline、分支、执行、总结）在同一个 async generator 中执行。
+        # 使用 trace_context 显式传递 trace_id，避免跨 async 上下文的 contextvar 问题。
 
-        # Trivial → SSE LLM 流式回复（跳过 DAG 执行）
-        if quick_result == QuickFilterResult.TRIVIAL:
-            return StreamingResponse(
-                _direct_llm_stream(
-                    message,
-                    user_id=request.user_id,
-                    session_id=request.session_id,
-                    scene_memory=request.scene_memory,
-                ),
-                media_type="text/event-stream",
-                headers={
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                    "X-Accel-Buffering": "no",
-                },
-            )
-
-        # reject → SSE 流式返回 LLM 拒绝说明
-        if decision.action == "reject":
-            logger.info(f"[Agent] 任务被拒绝: {decision.reason}")
-
-            reject_input = f"用户消息: {message}\n\n无法执行原因: {decision.reason}"
-            reject_input_tokens = _estimate_tokens(reject_input)
-
-            async def reject_event_stream():
-                output_text = ""
-
-                # 1. rejected 事件（通知前端关闭 HITL）
-                rejected_data = _json_compact(
-                    {"reason": decision.reason or "无法执行此任务", "original_intent": message}
+        async def _unified_stream():
+            # ── Root Langfuse trace（使用 trace_context 显式传递 trace_id）──
+            root = None
+            trace_id = None
+            if is_langfuse_enabled():
+                langfuse = get_langfuse()
+                trace_id = langfuse.create_trace_id()
+                root = langfuse.start_observation(
+                    name="agent_chat_stream",
+                    as_type="trace",
+                    trace_context={"trace_id": trace_id},
+                    input={"user_message": message[:200]},
+                    metadata={
+                        "user_id": request.user_id,
+                        "session_id": request.session_id,
+                    },
                 )
-                yield f"event: rejected\ndata: {rejected_data}\n\n"
 
-                # 2. LLM 生成自然语言拒绝说明
-                langfuse_gen = None
-                if is_langfuse_enabled():
-                    langfuse = get_langfuse()
-                    langfuse_gen = langfuse.start_observation(
-                        name="reject-llm-stream",
-                        as_type="generation",
-                        model=model_name,
-                        input={"reject_reason": decision.reason, "user_message": message},
-                        metadata={"source": "agent.reject_event_stream"},
+            try:
+                # ── Phase 0-3: 意图识别 + DAG 生成 ──
+                pipeline_result = await _run_intent_pipeline(request, trace_id=trace_id)
+
+                quick_result = pipeline_result["quick_result"]
+                decision = pipeline_result["decision"]
+                dag = pipeline_result["dag"]
+                inventory = pipeline_result["inventory"]
+                deep_analysis = pipeline_result.get("deep_analysis")
+
+                if root:
+                    root.update(
+                        output={
+                            "quick_result": (
+                                str(quick_result.value) if quick_result else None
+                            ),
+                            "decision_action": decision.action if decision else None,
+                            "dag_steps": len(dag.steps) if dag else 0,
+                            "intent_type": (
+                                deep_analysis.intent_type if deep_analysis else None
+                            ),
+                        }
                     )
-                try:
-                    client, model_name = _get_llm_client()
-                    stream = client.chat.completions.create(
-                        model=model_name,
-                        messages=[
-                            {
-                                "role": "system",
-                                "content": "你是一个 AI 助手。用户请求你执行一项任务，但你无法完成。请用自然语言、友好的语气告诉用户为什么无法执行。回答紧凑简洁，不要有多余空行和空格。",
+
+                # Trivial → SSE LLM 流式回复（跳过 DAG 执行）
+                if quick_result == QuickFilterResult.TRIVIAL:
+                    async for chunk in _direct_llm_stream(
+                        message,
+                        user_id=request.user_id,
+                        session_id=request.session_id,
+                        scene_memory=request.scene_memory,
+                        trace_id=trace_id,
+                    ):
+                        yield chunk
+                    return
+
+                # reject → SSE 流式返回 LLM 拒绝说明
+                if decision.action == "reject":
+                    logger.info(f"[Agent] 任务被拒绝: {decision.reason}")
+
+                    reject_input = (
+                        f"用户消息: {message}\n\n无法执行原因: {decision.reason}"
+                    )
+                    reject_input_tokens = _estimate_tokens(reject_input)
+
+                    output_text = ""
+
+                    # 1. rejected 事件（通知前端关闭 HITL）
+                    rejected_data = _json_compact(
+                        {
+                            "reason": decision.reason or "无法执行此任务",
+                            "original_intent": message,
+                        }
+                    )
+                    yield f"event: rejected\ndata: {rejected_data}\n\n"
+
+                    # 2. LLM 生成自然语言拒绝说明
+                    langfuse_gen = None
+                    if is_langfuse_enabled():
+                        langfuse = get_langfuse()
+                        langfuse_gen = langfuse.start_observation(
+                            name="reject-llm-stream",
+                            as_type="generation",
+                            trace_context={"trace_id": trace_id} if trace_id else None,
+                            model=model_name,
+                            input={
+                                "reject_reason": decision.reason,
+                                "user_message": message,
                             },
-                            {"role": "user", "content": reject_input},
-                        ],
-                        temperature=0.3,
-                        max_tokens=512,
-                        stream=True,
+                            metadata={"source": "agent.reject_event_stream"},
+                        )
+                    try:
+                        client, model_name = _get_llm_client()
+                        stream = client.chat.completions.create(
+                            model=model_name,
+                            messages=[
+                                {
+                                    "role": "system",
+                                    "content": "你是一个 AI 助手。用户请求你执行一项任务，但你无法完成。请用自然语言、友好的语气告诉用户为什么无法执行。回答紧凑简洁，不要有多余空行和空格。",
+                                },
+                                {"role": "user", "content": reject_input},
+                            ],
+                            temperature=0.3,
+                            max_tokens=512,
+                            stream=True,
+                        )
+                        for chunk in stream:
+                            if (
+                                chunk.choices
+                                and chunk.choices[0].delta
+                                and chunk.choices[0].delta.content
+                            ):
+                                content = chunk.choices[0].delta.content
+                                output_text += content
+                                data = _json_compact({"content": content})
+                                yield f"event: content\ndata: {data}\n\n"
+                    except Exception as e:
+                        logger.warning(f"[Agent] Reject LLM 失败: {e}")
+                        fallback = f"抱歉，我无法执行此任务。{decision.reason}"
+                        output_text = fallback
+                        data = _json_compact({"content": fallback})
+                        yield f"event: content\ndata: {data}\n\n"
+                    finally:
+                        if langfuse_gen:
+                            langfuse_gen.update(output=output_text)
+                            langfuse_gen.end()
+
+                    # 3. execution_complete
+                    complete_data = _json_compact(
+                        {
+                            "status": "rejected",
+                            "reason": decision.reason,
+                            "summary": {
+                                "original_intent": message,
+                                "steps_completed": 0,
+                                "steps_total": 0,
+                            },
+                        }
                     )
-                    for chunk in stream:
-                        if (
-                            chunk.choices
-                            and chunk.choices[0].delta
-                            and chunk.choices[0].delta.content
-                        ):
-                            content = chunk.choices[0].delta.content
-                            output_text += content
-                            data = _json_compact({"content": content})
-                            yield f"event: content\ndata: {data}\n\n"
-                except Exception as e:
-                    logger.warning(f"[Agent] Reject LLM 失败: {e}")
-                    fallback = f"抱歉，我无法执行此任务。{decision.reason}"
-                    output_text = fallback
-                    data = _json_compact({"content": fallback})
-                    yield f"event: content\ndata: {data}\n\n"
-                finally:
-                    if langfuse_gen:
-                        langfuse_gen.update(output=output_text)
-                        langfuse_gen.end()
+                    yield f"event: execution_complete\ndata: {complete_data}\n\n"
 
-                # 3. execution_complete
-                complete_data = _json_compact(
-                    {"status": "rejected", "reason": decision.reason, "summary": {"original_intent": message, "steps_completed": 0, "steps_total": 0}}
+                    # 4. 上报指标
+                    output_tokens = _estimate_tokens(output_text)
+                    await report_chat_metrics(
+                        user_id=request.user_id,
+                        session_id=request.session_id,
+                        input_token=reject_input_tokens
+                        + pipeline_result.get("pipeline_input_tokens", 0),
+                        output_token=output_tokens
+                        + pipeline_result.get("pipeline_output_tokens", 0),
+                    )
+                    return
+
+                # fallback/clarify → SSE LLM 流式回复（无 DAG 可执行）
+                if decision.action != "proceed":
+                    async for chunk in _direct_llm_stream(
+                        message,
+                        user_id=request.user_id,
+                        session_id=request.session_id,
+                        extra_input_tokens=pipeline_result.get(
+                            "pipeline_input_tokens", 0
+                        ),
+                        extra_output_tokens=pipeline_result.get(
+                            "pipeline_output_tokens", 0
+                        ),
+                        scene_memory=request.scene_memory,
+                        trace_id=trace_id,
+                    ):
+                        yield chunk
+                    return
+
+                # proceed 但 DAG 为空（生成/验证失败）
+                if not dag or not dag.steps:
+                    logger.warning(
+                        f"[Agent-Stream] DAG 为空但仍收到 proceed: "
+                        f"message='{message[:60]}', "
+                        f"intent={deep_analysis.intent_type if deep_analysis else 'unknown'}"
+                    )
+
+                    output_text = ""
+                    dag_input_tokens = pipeline_result.get("pipeline_input_tokens", 0)
+                    dag_output_tokens = pipeline_result.get("pipeline_output_tokens", 0)
+                    llm_input_tokens = 0
+
+                    # 1. log 事件
+                    log_data = _json_compact(
+                        {
+                            "message": "无法生成执行计划，将由 LLM 直接回复",
+                            "original_intent": message,
+                        }
+                    )
+                    yield f"event: log\ndata: {log_data}\n\n"
+
+                    # 2. LLM 生成自然语言回复
+                    scene_text = _build_scene_memory_text(request.scene_memory)
+                    system_prompt = (
+                        "你是一个 AI 助手。用户请求你执行一项任务，但系统无法为这个请求生成自动化的执行计划。请用自然语言、友好的语气给用户一个简单的回应，说明你无法自动执行这个请求，但仍然可以提供一般性的帮助或信息。保持回答紧凑简洁，不要有多余空行和空格。"
+                        + scene_text
+                    )
+
+                    langfuse_gen = None
+                    if is_langfuse_enabled():
+                        langfuse = get_langfuse()
+                        langfuse_gen = langfuse.start_observation(
+                            name="dag-empty-llm-stream",
+                            as_type="generation",
+                            trace_context={"trace_id": trace_id} if trace_id else None,
+                            model=model_name,
+                            input={
+                                "system": system_prompt[:200],
+                                "user_message": message,
+                            },
+                            metadata={"source": "agent.dag_empty_stream"},
+                        )
+                    try:
+                        client, model_name = _get_llm_client()
+                        llm_input_tokens = _estimate_tokens(message)
+                        stream = client.chat.completions.create(
+                            model=model_name,
+                            messages=[
+                                {"role": "system", "content": system_prompt},
+                                {"role": "user", "content": message},
+                            ],
+                            temperature=0.3,
+                            max_tokens=1024,
+                            stream=True,
+                        )
+                        for chunk in stream:
+                            if (
+                                chunk.choices
+                                and chunk.choices[0].delta
+                                and chunk.choices[0].delta.content
+                            ):
+                                content = chunk.choices[0].delta.content
+                                output_text += content
+                                data = _json_compact({"content": content})
+                                yield f"event: content\ndata: {data}\n\n"
+                    except Exception as e:
+                        logger.warning(
+                            f"[Agent-Stream] DAG-empty LLM 流式调用失败: {e}"
+                        )
+                        fallback = "抱歉，我无法为你的请求生成自动化执行计划，但我可以尝试以普通对话方式回答你的问题。请重发一次消息，取消 Agent 模式即可。"
+                        output_text = fallback
+                        data = _json_compact({"content": fallback})
+                        yield f"event: content\ndata: {data}\n\n"
+                    finally:
+                        if langfuse_gen:
+                            langfuse_gen.update(output=output_text)
+                            langfuse_gen.end()
+
+                    # 3. execution_complete
+                    complete_data = _json_compact(
+                        {
+                            "status": "dag_generation_failed",
+                            "reason": "DAG 计划生成失败（可能请求的能力不可用）",
+                            "total_steps": 0,
+                            "completed_steps": 0,
+                            "summary": {
+                                "original_intent": message,
+                                "steps_completed": 0,
+                                "steps_total": 0,
+                            },
+                        }
+                    )
+                    yield f"event: execution_complete\ndata: {complete_data}\n\n"
+
+                    # 4. 上报指标
+                    output_tokens = _estimate_tokens(output_text)
+                    await report_chat_metrics(
+                        user_id=request.user_id,
+                        session_id=request.session_id,
+                        input_token=dag_input_tokens + llm_input_tokens,
+                        output_token=output_tokens + dag_output_tokens,
+                    )
+                    return
+
+                # ── SSE 流式执行 ──
+                session_id = (
+                    request.session_id
+                    or f"conv_{request.user_id}_{uuid.uuid4().hex[:8]}"
                 )
-                yield f"event: execution_complete\ndata: {complete_data}\n\n"
-
-                # 4. 上报指标
-                output_tokens = _estimate_tokens(output_text)
-                await report_chat_metrics(
-                    user_id=request.user_id,
-                    session_id=request.session_id,
-                    input_token=reject_input_tokens
-                    + pipeline_result.get("pipeline_input_tokens", 0),
-                    output_token=output_tokens
-                    + pipeline_result.get("pipeline_output_tokens", 0),
-                )
-
-            return StreamingResponse(
-                reject_event_stream(),
-                media_type="text/event-stream",
-                headers={
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                    "X-Accel-Buffering": "no",
-                },
-            )
-
-        # fallback/clarify → SSE LLM 流式回复（无 DAG 可执行）
-        if decision.action != "proceed":
-            return StreamingResponse(
-                _direct_llm_stream(
-                    message,
-                    user_id=request.user_id,
-                    session_id=request.session_id,
-                    extra_input_tokens=pipeline_result.get("pipeline_input_tokens", 0),
-                    extra_output_tokens=pipeline_result.get(
+                context = {
+                    "user_id": request.user_id,
+                    "session_id": session_id,
+                    "mcp_servers": pipeline_result["mcp_tool_infos"],
+                    "pipeline_input_tokens": pipeline_result.get(
+                        "pipeline_input_tokens", 0
+                    ),
+                    "pipeline_output_tokens": pipeline_result.get(
                         "pipeline_output_tokens", 0
                     ),
-                    scene_memory=request.scene_memory,
-                ),
-                media_type="text/event-stream",
-                headers={
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                    "X-Accel-Buffering": "no",
-                },
-            )
+                }
 
-        # proceed 但 DAG 为空（生成/验证失败）→ SSE 流通知客户端，同时 LLM 生成回复
-        if not dag or not dag.steps:
-            logger.warning(
-                f"[Agent-Stream] DAG 为空但仍收到 proceed: "
-                f"message='{message[:60]}', "
-                f"intent={deep_analysis.intent_type if deep_analysis else 'unknown'}"
-            )
+                engine = DAGExecutionEngine(dag=dag, context=context)
 
-            async def dag_empty_stream():
-                output_text = ""
-                dag_input_tokens = pipeline_result.get("pipeline_input_tokens", 0)
-                dag_output_tokens = pipeline_result.get("pipeline_output_tokens", 0)
-                llm_input_tokens = 0
-
-                # 1. log 事件（告知客户端 DAG 为空但不视为错误，后续有 LLM 回复）
-                log_data = _json_compact(
-                    {"message": "无法生成执行计划，将由 LLM 直接回复", "original_intent": message}
-                )
-                yield f"event: log\ndata: {log_data}\n\n"
-
-                # 2. LLM 生成自然语言回复（让用户得到有意义的回应而不是空内容）
-                scene_text = _build_scene_memory_text(request.scene_memory)
-                system_prompt = (
-                    "你是一个 AI 助手。用户请求你执行一项任务，但系统无法为这个请求生成自动化的执行计划。请用自然语言、友好的语气给用户一个简单的回应，说明你无法自动执行这个请求，但仍然可以提供一般性的帮助或信息。保持回答紧凑简洁，不要有多余空行和空格。"
-                    + scene_text
-                )
-
-                langfuse_gen = None
-                if is_langfuse_enabled():
-                    langfuse = get_langfuse()
-                    langfuse_gen = langfuse.start_observation(
-                        name="dag-empty-llm-stream",
-                        as_type="generation",
-                        model=model_name,
-                        input={"system": system_prompt[:200], "user_message": message},
-                        metadata={"source": "agent.dag_empty_stream"},
-                    )
-                try:
-                    client, model_name = _get_llm_client()
-                    llm_input_tokens = _estimate_tokens(message)
-                    stream = client.chat.completions.create(
-                        model=model_name,
-                        messages=[
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": message},
-                        ],
-                        temperature=0.3,
-                        max_tokens=1024,
-                        stream=True,
-                    )
-                    for chunk in stream:
-                        if (
-                            chunk.choices
-                            and chunk.choices[0].delta
-                            and chunk.choices[0].delta.content
-                        ):
-                            content = chunk.choices[0].delta.content
-                            output_text += content
-                            data = _json_compact({"content": content})
-                            yield f"event: content\ndata: {data}\n\n"
-                except Exception as e:
-                    logger.warning(f"[Agent-Stream] DAG-empty LLM 流式调用失败: {e}")
-                    # LLM 不可用时，用固定文案兜底
-                    fallback = "抱歉，我无法为你的请求生成自动化执行计划，但我可以尝试以普通对话方式回答你的问题。请重发一次消息，取消 Agent 模式即可。"
-                    output_text = fallback
-                    data = _json_compact({"content": fallback})
-                    yield f"event: content\ndata: {data}\n\n"
-                finally:
-                    if langfuse_gen:
-                        langfuse_gen.update(output=output_text)
-                        langfuse_gen.end()
-
-                # 3. execution_complete
-                complete_data = _json_compact(
-                    {"status": "dag_generation_failed", "reason": "DAG 计划生成失败（可能请求的能力不可用）", "total_steps": 0, "completed_steps": 0, "summary": {"original_intent": message, "steps_completed": 0, "steps_total": 0}}
-                )
-                yield f"event: execution_complete\ndata: {complete_data}\n\n"
-
-                # 4. 上报指标（包含 LLM 回复 token）
-                output_tokens = _estimate_tokens(output_text)
-                await report_chat_metrics(
-                    user_id=request.user_id,
-                    session_id=request.session_id,
-                    input_token=dag_input_tokens + llm_input_tokens,
-                    output_token=output_tokens + dag_output_tokens,
-                )
-
-            return StreamingResponse(
-                dag_empty_stream(),
-                media_type="text/event-stream",
-                headers={
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                    "X-Accel-Buffering": "no",
-                },
-            )
-
-        # ── SSE 流式执行 ──
-        session_id = (
-            request.session_id or f"conv_{request.user_id}_{uuid.uuid4().hex[:8]}"
-        )
-        context = {
-            "user_id": request.user_id,
-            "session_id": session_id,
-            "mcp_servers": pipeline_result["mcp_tool_infos"],
-            "pipeline_input_tokens": pipeline_result.get("pipeline_input_tokens", 0),
-            "pipeline_output_tokens": pipeline_result.get("pipeline_output_tokens", 0),
-        }
-
-        engine = DAGExecutionEngine(dag=dag, context=context)
-
-        async def event_stream():
-            try:
                 execution_status = None
                 async for event in engine.execute(
                     inventory=inventory,
@@ -867,17 +927,19 @@ async def agent_chat_stream(request: AgentChatRequest):
                         user_id=request.user_id,
                         session_id=session_id,
                         scene_memory=request.scene_memory,
+                        trace_id=trace_id,
                     ):
                         yield content_chunk
             except Exception as e:
-                logger.error(f"[Agent-Stream] 执行异常: {e}")
-                error_data = _json_compact(
-                    {"message": f"执行异常: {e}"}
-                )
+                logger.error(f"[Agent-Stream] 流式处理异常: {e}")
+                error_data = _json_compact({"message": f"处理失败: {e}"})
                 yield f"event: error\ndata: {error_data}\n\n"
+            finally:
+                if root:
+                    root.end()
 
         return StreamingResponse(
-            event_stream(),
+            _unified_stream(),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",

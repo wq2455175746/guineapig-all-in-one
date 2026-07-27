@@ -40,6 +40,9 @@ class PipelineContext:
     commands: list[dict] = field(default_factory=list)
     error: Optional[str] = None
 
+    # Langfuse trace ID（通过 trace_context 链接所有 span）
+    trace_id: Optional[str] = None
+
     # 内部状态（Processors 间传递）
     _selected_skill_names: list = field(default_factory=list)
     _skill_context_loaded: bool = False
@@ -80,6 +83,7 @@ class SkillSelectionProcessor(BaseProcessor):
                 api_key=ctx.api_key,
                 base_url=ctx.base_url,
                 model=ctx.model_name,
+                trace_id=ctx.trace_id,
             )
             logger.info(f"[Pipeline] 选中技能: {selected}")
             ctx._selected_skill_names = selected
@@ -239,6 +243,7 @@ class LLMStreamProcessor(BaseProcessor):
             model_name=ctx.model_name,
             temperature=ctx.temperature,
             max_tokens=ctx.max_tokens,
+            trace_id=ctx.trace_id,
         ):
             ctx.full_content += chunk
             yield f"data: {json.dumps({'content': chunk})}\n\n"

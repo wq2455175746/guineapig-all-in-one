@@ -35,6 +35,7 @@ async def select_relevant_skills(
     api_key: str,
     base_url: str,
     model: str,
+    trace_id: str | None = None,
 ) -> list[str]:
     """
     Phase 1: 让 LLM 判断哪些 skill 与用户问题相关。
@@ -68,9 +69,11 @@ async def select_relevant_skills(
     langfuse_gen = None
     if is_langfuse_enabled():
         langfuse = get_langfuse()
+        trace_ctx = {"trace_id": trace_id} if trace_id else None
         langfuse_gen = langfuse.start_observation(
             name="select-relevant-skills",
             as_type="generation",
+            trace_context=trace_ctx,
             model=model,
             input={"system": messages[0]["content"][:200], "user": messages[1]["content"][:500]},
             metadata={"source": "skill_load_service.select_relevant_skills"},
