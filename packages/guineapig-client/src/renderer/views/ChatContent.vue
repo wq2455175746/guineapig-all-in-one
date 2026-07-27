@@ -178,12 +178,11 @@ import MarkdownIt from 'markdown-it'
 const md = new MarkdownIt({
   html: false,
   linkify: true,
-  breaks: true
+  breaks: false
 })
 
 function renderMarkdown(content: string): string {
   if (!content) return ''
-  // trim 输出去掉 md.render() 末尾追加的 \n，避免 white-space: pre-wrap 下多出空行
   return md.render(content.trim()).trim()
 }
 
@@ -795,18 +794,11 @@ watch(() => props.messages.map(m => m.content + m.messageId).join('|'), () => {
   color: #060606;
 }
 
-.message-content {
-  white-space: pre-wrap;
-}
-
-/* Markdown 渲染样式 */
+/* Markdown 渲染样式 — 紧凑排版 */
 .message-content :deep(p) {
-  margin: 0 0 6px;
+  margin: 0;
   line-height: 1.6;
-}
-
-.message-content :deep(p:last-child) {
-  margin-bottom: 0;
+  min-height: 0;
 }
 
 .message-content :deep(a) {

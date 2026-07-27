@@ -10,6 +10,7 @@ from app.core.oss_wrapper_utils import cleanup_oss_client
 # 导入事件监听器以注册信号监听
 from app.middleware import ProcessTimeMiddleware, PrometheusMetricsMiddleware
 from app.services.memory_scheduler_service import memory_scheduler
+from app.services.langfuse_client import init_langfuse, close_langfuse
 from app.services.otel_service import otel_service
 from app.services.rag_retrieval_service import MilvusSearcher
 from app.schemas.base_models import error_response
@@ -24,6 +25,9 @@ from app.routers import asr, llm, memory, rag, skill, task, agent, agent_control
 async def lifespan(app: FastAPI):
     # 应用启动时初始化资源（可选）
     logger.info("应用启动，初始化资源...")
+
+    # 初始化 Langfuse 可观测性
+    init_langfuse()
 
     # 启动内存监控定时任务（每5分钟执行一次）
     memory_scheduler.start_memory_monitoring(interval_minutes=1)
@@ -46,7 +50,10 @@ async def lifespan(app: FastAPI):
     # 2. 清理OSS客户端，避免信号量泄漏
     cleanup_oss_client()
 
-    # 3. 关闭可观察指标 Redis 连接
+    # 3. 关闭 Langfuse 客户端（flush + 清理）
+    close_langfuse()
+
+    # 4. 关闭可观察指标 Redis 连接
     await otel_service.close()
     # Redis 连接已被移除（不再需要 PipelineSession Redis 功能）
 

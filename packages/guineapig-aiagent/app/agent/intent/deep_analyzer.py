@@ -6,14 +6,18 @@ Phase 2: LLM 深度意图分析 — 一次非流式 LLM 调用，输出结构化
 - Phase 1 无匹配或置信度不足
 
 使用与 handle_llmservice 相同的 OpenAI 兼容客户端（settings 配置）。
+集成 Langfuse 可观测性：自动追踪 LLM 调用链。
 """
 
 import json
 
 from openai import OpenAI
 
+from langfuse import observe
+
 from app.config import settings
 from app.core.log import logger
+from app.services.langfuse_client import get_langfuse, is_langfuse_enabled
 
 from ..models import DeepAnalysisResult, CapabilityInventory
 from .prompts import DEEP_ANALYZER_SYSTEM, DEEP_ANALYZER_HUMAN_TEMPLATE
@@ -31,6 +35,7 @@ class DeepAnalyzer:
         return client, settings.LLM_MODEL_NAME
 
     @classmethod
+    @observe(as_type="generation", name="deep_analyzer")
     def analyze(
         cls,
         user_message: str,
@@ -92,6 +97,21 @@ class DeepAnalyzer:
                 f"msg='{user_message[:60]}...'"
             )
 
+            # ── Langfuse Generation Span (SDK v4) ──
+            langfuse_gen = None
+            if is_langfuse_enabled():
+                langfuse = get_langfuse()
+                langfuse_gen = langfuse.start_observation(
+                    name="deep-analyzer-llm",
+                    as_type="generation",
+                    model=model_name,
+                    input={
+                        "system": DEEP_ANALYZER_SYSTEM[:200],
+                        "user": human_message[:500],
+                    },
+                    metadata={"intent_phase": "phase2_deep_analyzer"},
+                )
+
             completion = client.chat.completions.create(
                 model=model_name,
                 messages=[
@@ -102,6 +122,18 @@ class DeepAnalyzer:
                 max_tokens=1024,
                 response_format={"type": "json_object"},
             )
+
+            # ── 结束 Langfuse Generation Span (SDK v4) ──
+            if langfuse_gen:
+                usage = completion.usage
+                update_kwargs = {"output": completion.choices[0].message.content}
+                if usage:
+                    update_kwargs["usage_details"] = {
+                        "input": usage.prompt_tokens,
+                        "output": usage.completion_tokens,
+                    }
+                langfuse_gen.update(**update_kwargs)
+                langfuse_gen.end()
 
             raw = completion.choices[0].message.content
             logger.debug(f"[DeepAnalyzer] LLM 原始回复: {raw[:1000]}...")

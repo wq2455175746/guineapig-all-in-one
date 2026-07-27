@@ -66,6 +66,12 @@ class Settings(BaseSettings):
     S3_PROMPT_KEY: str = "audio/tts/prompt/prompt.wav"
     DATA_DIR: str = ""  # 本地数据目录，为空时自动计算
 
+    # Langfuse 可观测性配置
+    LANGFUSE_SECRET_KEY: str = ""
+    LANGFUSE_PUBLIC_KEY: str = ""
+    LANGFUSE_BASE_URL: str = ""
+    LANGFUSE_ENABLE: bool = True
+
     class Config:
         env_file = ".env"
         case_sensitive = True

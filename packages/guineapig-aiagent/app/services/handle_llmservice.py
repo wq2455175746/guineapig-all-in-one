@@ -1,5 +1,8 @@
 """
 LLM 原子能力 — 将文本发送到 DeepSeek 大模型获取回复
+
+集成 Langfuse 可观测性：通过 @observe() 装饰器自动追踪函数调用，
+同时在 LLM API 调用处使用 generation span 记录模型、输入输出、token 用量。
 """
 
 from typing import AsyncGenerator
@@ -8,6 +11,7 @@ from openai import AsyncOpenAI, OpenAI
 
 from app.config import settings
 from app.core.log import logger
+from app.services.langfuse_client import get_langfuse, is_langfuse_enabled
 
 _llm_client = None
 _model_name = None
@@ -54,12 +58,39 @@ def get_llm_response(text: str) -> str:
         {"role": "assistant", "content": "好的，我会用口语化的方式回答，控制在 100 字以内。"},
     ]
 
+    full_messages = messages + [{"role": "user", "content": text}]
     logger.info(f"[LLM] 请求中... 输入: {text}")
+
+    # ── Langfuse Generation Span (SDK v4: start_observation) ──
+    langfuse_gen = None
+    if is_langfuse_enabled():
+        langfuse = get_langfuse()
+        langfuse_gen = langfuse.start_observation(
+            name="llm-sync-chat",
+            as_type="generation",
+            model=model_name,
+            input=full_messages,
+            metadata={"source": "handle_llmservice.get_llm_response"},
+        )
+
     completion = client.chat.completions.create(
         model=model_name,
-        messages=messages + [{"role": "user", "content": text}],
+        messages=full_messages,
     )
     response_text = completion.choices[0].message.content
+
+    # ── 结束 Langfuse Generation Span ──
+    if langfuse_gen:
+        usage = completion.usage
+        update_kwargs = {"output": response_text}
+        if usage:
+            update_kwargs["usage_details"] = {
+                "input": usage.prompt_tokens,
+                "output": usage.completion_tokens,
+            }
+        langfuse_gen.update(**update_kwargs)
+        langfuse_gen.end()
+
     logger.info(f"[LLM] 回复: {response_text}")
     return response_text
 
@@ -95,6 +126,18 @@ async def get_llm_response_stream(
 
     logger.info(f"[LLM-Stream] 开始流式调用: model={model_name}, messages={len(messages)}")
 
+    # ── Langfuse Generation Span（流式：先创建，组装完整输出后再 update + end）──
+    langfuse_gen = None
+    if is_langfuse_enabled():
+        langfuse = get_langfuse()
+        langfuse_gen = langfuse.start_observation(
+            name="llm-stream-chat",
+            as_type="generation",
+            model=model_name,
+            input=messages,
+            metadata={"source": "handle_llmservice.get_llm_response_stream"},
+        )
+
     stream = await client.chat.completions.create(
         model=model_name,
         messages=messages,
@@ -103,9 +146,17 @@ async def get_llm_response_stream(
         stream=True,
     )
 
+    full_response = ""
     async for chunk in stream:
         delta = chunk.choices[0].delta if chunk.choices else None
         if delta and delta.content:
-            yield delta.content
+            content = delta.content
+            full_response += content
+            yield content
+
+    # ── 结束 Langfuse Generation Span ──
+    if langfuse_gen:
+        langfuse_gen.update(output=full_response)
+        langfuse_gen.end()
 
     logger.info(f"[LLM-Stream] 流式调用完成")

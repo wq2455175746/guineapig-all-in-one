@@ -10,6 +10,8 @@ from fastapi.responses import StreamingResponse
 from app.core.log import logger
 from app.reporting.otel_metrics import report_chat_metrics
 from app.schemas.llm_models import LLMStreamRequest
+from app.services.langfuse_client import get_langfuse, is_langfuse_enabled
+from langfuse import observe
 from app.services.llm_pipeline import (
     Pipeline,
     PipelineContext,
@@ -80,6 +82,7 @@ async def _stream_with_metrics(ctx: PipelineContext, session_id: str):
 
 
 @router.post("/chat/stream")
+@observe(name="llm_chat_stream")
 async def chat_stream(request: LLMStreamRequest):
     """
     SSE 流式 LLM 接口。

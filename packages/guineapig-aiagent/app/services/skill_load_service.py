@@ -15,6 +15,7 @@ from app.config import settings
 from app.core.log import logger
 from app.core.oss_wrapper_utils import download_file_from_s3
 from app.schemas.llm_models import SkillInfo
+from app.services.langfuse_client import get_langfuse, is_langfuse_enabled
 
 from openai import AsyncOpenAI
 
@@ -62,6 +63,19 @@ async def select_relevant_skills(
     ]
 
     client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+
+    # ── Langfuse Generation Span ──
+    langfuse_gen = None
+    if is_langfuse_enabled():
+        langfuse = get_langfuse()
+        langfuse_gen = langfuse.start_observation(
+            name="select-relevant-skills",
+            as_type="generation",
+            model=model,
+            input={"system": messages[0]["content"][:200], "user": messages[1]["content"][:500]},
+            metadata={"source": "skill_load_service.select_relevant_skills"},
+        )
+
     try:
         response = await client.chat.completions.create(
             model=model,
@@ -71,9 +85,22 @@ async def select_relevant_skills(
         )
     except Exception as e:
         logger.error(f"[SkillLoad] Phase 1 LLM call failed: {e}")
+        if langfuse_gen:
+            langfuse_gen.update(level="ERROR", status_message=str(e))
+            langfuse_gen.end()
         return []
 
     text = response.choices[0].message.content or "[]"
+    if langfuse_gen:
+        usage = response.usage
+        update_kwargs = {"output": text}
+        if usage:
+            update_kwargs["usage_details"] = {
+                "input": usage.prompt_tokens,
+                "output": usage.completion_tokens,
+            }
+        langfuse_gen.update(**update_kwargs)
+        langfuse_gen.end()
     # 尝试从响应中提取 JSON 数组
     try:
         match = re.search(r'\[.*?\]', text, re.DOTALL)

@@ -5,6 +5,7 @@
 
 Client 端能力（cli/skill/stdio MCP）返回 awaiting_client 信号，
 由 executor engine 封装为 STEP_AWAITING_CLIENT 事件。
+集成 Langfuse 可观测性：追踪每个 DAG 步骤的执行。
 """
 
 import asyncio
@@ -17,6 +18,7 @@ from app.config import settings
 from app.core.log import logger
 from app.services.rag_retrieval_service import retrieve_rag_context
 from app.services.handle_llmservice import get_llm_response
+from app.services.langfuse_client import get_langfuse, is_langfuse_enabled
 
 
 class CapabilityHandlers:
@@ -137,6 +139,19 @@ class CapabilityHandlers:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": prompt},
                 ]
+
+                # ── Langfuse Generation Span (SDK v4) ──
+                langfuse_gen = None
+                if is_langfuse_enabled():
+                    langfuse = get_langfuse()
+                    langfuse_gen = langfuse.start_observation(
+                        name="handler-llm-chat",
+                        as_type="generation",
+                        model=settings.LLM_MODEL_NAME,
+                        input=messages,
+                        metadata={"handler": "handle_llm_chat", "has_system_prompt": True},
+                    )
+
                 completion = client.chat.completions.create(
                     model=settings.LLM_MODEL_NAME,
                     messages=messages,
@@ -144,6 +159,18 @@ class CapabilityHandlers:
                     max_tokens=params.get("max_tokens", 2048),
                 )
                 response_text = completion.choices[0].message.content or ""
+
+                # ── 结束 Langfuse Generation Span (SDK v4) ──
+                if langfuse_gen:
+                    usage = completion.usage
+                    update_kwargs = {"output": response_text}
+                    if usage:
+                        update_kwargs["usage_details"] = {
+                            "input": usage.prompt_tokens,
+                            "output": usage.completion_tokens,
+                        }
+                    langfuse_gen.update(**update_kwargs)
+                    langfuse_gen.end()
             else:
                 response_text = get_llm_response(prompt)
 

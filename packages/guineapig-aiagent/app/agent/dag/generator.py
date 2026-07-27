@@ -2,14 +2,17 @@
 DAG 生成器 — 根据 LLM 意图分析结果 + 能力清单，生成可执行的 DAG。
 
 通过一次非流式 LLM 调用生成步骤计划，然后由 validator 验证。
+集成 Langfuse 可观测性：自动追踪 DAG 生成 LLM 调用。
 """
 
 import json
 
+from langfuse import observe
 from openai import OpenAI
 
 from app.config import settings
 from app.core.log import logger
+from app.services.langfuse_client import get_langfuse, is_langfuse_enabled
 
 from ..models import (
     CapabilityInventory,
@@ -37,6 +40,7 @@ class DAGGenerator:
         return client, settings.LLM_MODEL_NAME
 
     @classmethod
+    @observe(as_type="generation", name="dag_generator")
     def generate(
         cls,
         deep_analysis: DeepAnalysisResult,
@@ -99,6 +103,24 @@ class DAGGenerator:
                 f"human_message={human_message}"
             )
 
+            # ── Langfuse Generation Span (SDK v4) ──
+            langfuse_gen = None
+            if is_langfuse_enabled():
+                langfuse = get_langfuse()
+                langfuse_gen = langfuse.start_observation(
+                    name="dag-generator-llm",
+                    as_type="generation",
+                    model=model_name,
+                    input={
+                        "system": DAG_GENERATOR_SYSTEM[:200],
+                        "user": human_message[:500],
+                    },
+                    metadata={
+                        "intent_type": deep_analysis.intent_type,
+                        "intent_phase": "dag_generation",
+                    },
+                )
+
             completion = client.chat.completions.create(
                 model=model_name,
                 messages=[
@@ -111,6 +133,19 @@ class DAGGenerator:
             )
 
             raw = completion.choices[0].message.content
+
+            # ── 结束 Langfuse Generation Span (SDK v4) ──
+            if langfuse_gen:
+                usage = completion.usage
+                update_kwargs = {"output": raw}
+                if usage:
+                    update_kwargs["usage_details"] = {
+                        "input": usage.prompt_tokens,
+                        "output": usage.completion_tokens,
+                    }
+                langfuse_gen.update(**update_kwargs)
+                langfuse_gen.end()
+
             logger.info(f"[DAGGenerator] LLM 原始回复: {raw[:1000]}...")
 
             steps = cls._parse_steps(raw)
