@@ -4,7 +4,7 @@ import os
 from typing import Annotated, List
 
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, NoDecode
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -69,13 +69,19 @@ class Settings(BaseSettings):
 
     # LLM (DeepSeek) 配置
     LLM_API_KEY: str = ""
-    LLM_BASE_URL: str = "https://api.deepseek.com/v1"
+    LLM_BASE_URL: str = "https://api.deepseek.com"
     LLM_MODEL_NAME: str = "deepseek-chat"
+    # LLM 调用有界重试：LLM_RETRY_ATTEMPTS 次重试 + 指数退避（LLM_RETRY_BACKOFF 秒起步）
+    LLM_RETRY_ATTEMPTS: int = 2
+    LLM_RETRY_BACKOFF: float = 1.0
 
     # 网络搜索配置
     SEARXNG_URL: str = "http://localhost:8484"
 
-    # Redis 配置（用于 PipelineSession 分布式状态管理）
+    # RAG 注入上下文 token 预算（system + context 总和上限，超出裁剪/截断）
+    RAG_CONTEXT_TOKEN_BUDGET: int = 8000
+
+    # Redis 配置（用于 OtelService 指标上报）
     REDIS_HOST: str = Field("localhost", alias="REDIS_HOST")
     REDIS_PORT: int = Field(6379, alias="REDIS_PORT")
     REDIS_DB: int = Field(0, alias="REDIS_DB")
@@ -92,10 +98,11 @@ class Settings(BaseSettings):
     LANGFUSE_BASE_URL: str = ""
     LANGFUSE_ENABLE: bool = True
 
-    class Config:
-        env_file = ".env"
-        case_sensitive = True
-        extra = "allow"
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        case_sensitive=True,
+        extra="forbid",
+    )
 
 
 # 全局配置实例

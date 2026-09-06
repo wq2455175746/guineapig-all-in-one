@@ -14,10 +14,11 @@ import zipfile
 
 from app.config import settings
 from app.core.log import logger
-from app.core.llm_clients import get_async_llm_client
+from app.core.llm_clients import call_with_retry_async, get_async_llm_client
 from app.core.oss_wrapper_utils import download_file_from_s3
 from app.schemas.llm_models import SkillInfo
 from app.services.langfuse_client import get_langfuse, is_langfuse_enabled
+from app.services.prompt_context import wrap_context
 from app.services.zip_utils import extract_zip_safe
 
 # 匹配 <commands>[JSON 数组]</commands>
@@ -83,7 +84,8 @@ async def select_relevant_skills(
         )
 
     try:
-        response = await client.chat.completions.create(
+        response = await call_with_retry_async(
+            client.chat.completions.create,
             model=model,
             messages=messages,
             temperature=0.1,
@@ -273,8 +275,9 @@ def inject_skill_system_prompt(
     )
 
     if skill_context:
+        # 技能内容属于外部内容，用 <context> 区块分隔以缓解提示注入
         skill_block = (
-            f"\n\n## Available Skills\n{skill_context}\n{commands_instruction}"
+            f"\n\n## Available Skills\n{wrap_context(skill_context)}\n{commands_instruction}"
         )
     else:
         skill_block = f"\n\n{commands_instruction}"

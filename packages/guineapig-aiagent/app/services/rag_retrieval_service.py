@@ -12,6 +12,16 @@ import requests
 from app.config import settings
 from app.core.log import logger
 from app.core.milvus_clients import get_milvus_client
+from app.services.prompt_context import wrap_context
+
+
+def _estimate_tokens(text: str) -> int:
+    """估算文本的 token 数（中文字符 ~1 token / 1.5 字符，英文 ~1 token / 4 字符）。"""
+    if not text:
+        return 0
+    chinese = sum(1 for c in text if "\u4e00" <= c <= "\u9fff")
+    other = len(text) - chinese
+    return max(1, int(chinese / 1.5 + other / 4))
 
 
 class MilvusSearcher:
@@ -303,14 +313,21 @@ async def retrieve_rag_context(
 
     logger.info(f"[RAG] 重排序完成: 返回 {len(reranked)} 条")
 
-    # 步骤 4: 格式化为 Markdown
+    # 步骤 4: 格式化为 Markdown，并在总 token 预算内裁剪/截断
+    formatted = _format_rag_markdown(reranked)
+    formatted = _apply_token_budget(formatted, reranked)
+    return wrap_context(formatted)
+
+
+def _format_rag_markdown(reranked: list[dict], chunk_cap: int = 2000) -> str:
+    """将重排结果格式化为 Markdown 字符串。"""
     lines = ["\n\n## 知识库检索结果"]
     for item in reranked:
         text = item["text"]
         score = item["relevance_score"]
         # 截断单个文本块，防止 system prompt 过大
-        if len(text) > 2000:
-            text = text[:2000] + "..."
+        if len(text) > chunk_cap:
+            text = text[:chunk_cap] + "..."
         lines.append(f"\n### 相关片段（相关性: {score:.2f}）")
         lines.append(text)
 
@@ -320,3 +337,35 @@ async def retrieve_rag_context(
     )
 
     return "\n".join(lines)
+
+
+def _apply_token_budget(markdown: str, reranked: list[dict]) -> str:
+    """
+    RAG 注入上下文 token 预算守卫。
+
+    超过 settings.RAG_CONTEXT_TOKEN_BUDGET 时：
+    1. 优先压缩每个片段的长度（chunk_cap 逐档减半，下限 200 字符）；
+    2. 仍超预算则丢弃相关性最低的片段（reranked 已按得分降序），并重置长度上限。
+    """
+    budget = max(1, settings.RAG_CONTEXT_TOKEN_BUDGET)
+    if _estimate_tokens(markdown) <= budget:
+        return markdown
+
+    chunks = list(reranked)  # 已按相关性得分降序
+    cap = 2000
+    min_cap = 200
+    while chunks:
+        cap = max(cap, min_cap)
+        result = _format_rag_markdown(chunks, chunk_cap=cap)
+        if _estimate_tokens(result) <= budget:
+            return result
+        if cap > min_cap:
+            cap //= 2
+            continue
+        if len(chunks) > 1:
+            # 压缩到下限仍超预算 → 丢弃最低分片段并重置长度上限
+            chunks = chunks[:-1]
+            cap = 2000
+            continue
+        return result  # 仅剩最高分片段且已达最小截断，尽力而为
+    return _format_rag_markdown(reranked[:1], chunk_cap=min_cap)

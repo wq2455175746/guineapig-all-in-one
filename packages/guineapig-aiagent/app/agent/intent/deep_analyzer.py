@@ -15,7 +15,7 @@ from openai import OpenAI
 
 from app.config import settings
 from app.core.log import logger
-from app.core.llm_clients import get_llm_client
+from app.core.llm_clients import call_with_retry, get_llm_client
 from app.services.langfuse_client import get_langfuse, is_langfuse_enabled
 
 from ..models import DeepAnalysisResult, CapabilityInventory
@@ -116,7 +116,8 @@ class DeepAnalyzer:
                     metadata={"intent_phase": "phase2_deep_analyzer"},
                 )
 
-            completion = client.chat.completions.create(
+            completion = call_with_retry(
+                client.chat.completions.create,
                 model=model_name,
                 messages=[
                     {"role": "system", "content": DEEP_ANALYZER_SYSTEM},

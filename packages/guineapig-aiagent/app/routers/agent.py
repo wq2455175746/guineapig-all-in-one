@@ -39,12 +39,13 @@ from app.agent.capability_registry import CapabilityRegistry
 from app.agent.intent import QuickFilter, IntentScanner, DeepAnalyzer, IntentDecision
 from app.agent.dag import DAGGenerator
 from app.agent.executor import DAGExecutionEngine
+from app.core.llm_clients import call_with_retry_async
 from app.reporting.otel_metrics import report_chat_metrics
 from langfuse import observe
 
 # 惰性初始化的 LLM 客户端（async 流式调用，避免阻塞事件循环）
 _llm_client: AsyncOpenAI | None = None
-_llm_model: str = "deepseek-chat"
+_llm_model: str = settings.LLM_MODEL_NAME
 
 
 def _get_llm_client() -> tuple[AsyncOpenAI, str]:
@@ -476,7 +477,8 @@ async def _stream_llm_response(
                 metadata=span_metadata,
             )
 
-        stream = await client.chat.completions.create(
+        stream = await call_with_retry_async(
+            client.chat.completions.create,
             model=model_name,
             messages=[
                 {"role": "system", "content": system_prompt},

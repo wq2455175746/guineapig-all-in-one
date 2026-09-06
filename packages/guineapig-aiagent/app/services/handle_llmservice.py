@@ -9,7 +9,12 @@ from typing import AsyncGenerator
 
 from app.config import settings
 from app.core.log import logger
-from app.core.llm_clients import get_async_llm_client, get_llm_client
+from app.core.llm_clients import (
+    call_with_retry,
+    call_with_retry_async,
+    get_async_llm_client,
+    get_llm_client,
+)
 from app.services.langfuse_client import get_langfuse, is_langfuse_enabled
 
 _llm_client = None
@@ -76,7 +81,8 @@ def get_llm_response(text: str) -> str:
             metadata={"source": "handle_llmservice.get_llm_response"},
         )
 
-    completion = client.chat.completions.create(
+    completion = call_with_retry(
+        client.chat.completions.create,
         model=model_name,
         messages=full_messages,
     )
@@ -144,7 +150,8 @@ async def get_llm_response_stream(
             metadata={"source": "handle_llmservice.get_llm_response_stream"},
         )
 
-    stream = await client.chat.completions.create(
+    stream = await call_with_retry_async(
+        client.chat.completions.create,
         model=model_name,
         messages=messages,
         temperature=temperature,

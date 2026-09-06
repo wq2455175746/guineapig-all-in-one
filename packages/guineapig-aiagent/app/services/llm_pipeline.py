@@ -138,15 +138,17 @@ class NetworkSearchProcessor(BaseProcessor):
             return
 
         from app.services.network_search_service import search_web
+        from app.services.prompt_context import wrap_context
 
         search_results = await search_web(user_message, max_results=5)
         if not search_results:
             logger.info("[Pipeline] 无联网搜索结果可注入")
             return
 
+        # 联网内容属于外部内容，用 <context> 区块分隔以缓解提示注入
         search_block = (
             "\n\n## 网络搜索结果\n"
-            f"{search_results}\n\n"
+            f"{wrap_context(search_results)}\n\n"
             "请参考以上网络搜索结果回答用户问题。如果结果相关，请在回答中引用；"
             "如果不相关或为空，忽略它们并正常回答。"
         )

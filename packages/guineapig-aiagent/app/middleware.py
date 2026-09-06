@@ -2,6 +2,7 @@
 
 import hmac
 import time
+import uuid
 
 from fastapi import Response, Request
 from fastapi.responses import JSONResponse
@@ -9,7 +10,7 @@ from prometheus_client import Counter, Histogram, Gauge
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import settings
-from app.core.log import logger
+from app.core.log import logger, request_id_var
 
 # 1. 定义进阶Prometheus指标
 # 计数器：总请求数
@@ -99,6 +100,25 @@ class AdminTokenAuthMiddleware(BaseHTTPMiddleware):
             )
 
         return await call_next(request)
+
+
+class RequestIDMiddleware(BaseHTTPMiddleware):
+    """请求链路 ID 中间件 — 生成/透传 request_id 并写入日志上下文。
+
+    - 请求头 `X-Request-Id` 存在时透传（分布式链路），否则生成新 ID
+    - 写入 `request_id_var` ContextVar，loguru 日志自动携带
+    - 响应头回传 `X-Request-Id`，便于客户端关联日志
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        req_id = request.headers.get("X-Request-Id") or uuid.uuid4().hex
+        token = request_id_var.set(req_id)
+        try:
+            response = await call_next(request)
+            response.headers["X-Request-Id"] = req_id
+            return response
+        finally:
+            request_id_var.reset(token)
 
 
 class ProcessTimeMiddleware(BaseHTTPMiddleware):

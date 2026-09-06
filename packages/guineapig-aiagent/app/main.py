@@ -13,6 +13,7 @@ from app.middleware import (
     AdminTokenAuthMiddleware,
     ProcessTimeMiddleware,
     PrometheusMetricsMiddleware,
+    RequestIDMiddleware,
 )
 from app.services.memory_scheduler_service import memory_scheduler
 from app.services.langfuse_client import init_langfuse, close_langfuse
@@ -60,7 +61,6 @@ async def lifespan(app: FastAPI):
 
     # 4. 关闭可观察指标 Redis 连接
     await otel_service.close()
-    # Redis 连接已被移除（不再需要 PipelineSession Redis 功能）
 
     # 5. 取消未完成的 RAG 后台嵌入任务
     rag.cancel_pending_embedding_tasks()
@@ -74,7 +74,9 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# 添加中间件（后添加者位于外层：CORS → Auth → Metrics → ProcessTime）
+# 添加中间件（后添加者位于外层，即请求先经过）。
+# 请求流：RequestID → CORS → Auth → Metrics → ProcessTime → 路由
+# RequestID 置于最外层，确保 request_id 覆盖所有请求/响应（含 401、异常响应）
 app.add_middleware(ProcessTimeMiddleware)
 app.add_middleware(PrometheusMetricsMiddleware)
 app.add_middleware(AdminTokenAuthMiddleware)
@@ -86,6 +88,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(RequestIDMiddleware)
 
 # 注册路由
 app.include_router(task.router)

@@ -71,6 +71,13 @@ def _patch_client(mocker, chunks=None, exc=None):
         "app.routers.agent._get_llm_client",
         return_value=(client, "test-model"),
     )
+
+    # 本测试关注 SSE 事件契约，不关注重试；将重试封装退化为直调避免退避 sleep。
+    # 用真实 async 函数替换（而非 MagicMock side_effect），规避 mock __await__ 陷阱。
+    async def _no_retry(fn, *a, **kw):
+        return await fn(*a, **kw)
+
+    mocker.patch("app.routers.agent.call_with_retry_async", new=_no_retry)
     return client
 
 
