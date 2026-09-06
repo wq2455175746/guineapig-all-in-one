@@ -113,11 +113,14 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         req_id = request.headers.get("X-Request-Id") or uuid.uuid4().hex
         token = request_id_var.set(req_id)
+        response = None
         try:
             response = await call_next(request)
-            response.headers["X-Request-Id"] = req_id
             return response
         finally:
+            # 正常/异常响应（含 500）都回传 X-Request-Id；未处理异常时 response 不存在则忽略
+            if response is not None:
+                response.headers["X-Request-Id"] = req_id
             request_id_var.reset(token)
 
 

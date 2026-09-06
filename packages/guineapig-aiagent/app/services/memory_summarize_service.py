@@ -6,7 +6,7 @@ import httpx
 
 from app.config import settings
 from app.core.log import logger
-from app.core.llm_clients import get_llm_client
+from app.core.llm_clients import call_with_retry, get_llm_client
 from app.schemas.memory_models import MemorySummarizeRequest
 
 MEMORY_TEMPLATE_PATH = os.path.join(
@@ -183,7 +183,8 @@ def process_memory_summarize(req: MemorySummarizeRequest):
         )
 
         logger.info(f"[MemorySummarize] 调用 LLM: model={req.model_info.model_name}")
-        completion = client.chat.completions.create(
+        completion = call_with_retry(
+            client.chat.completions.create,
             model=req.model_info.model_name,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},

@@ -76,7 +76,7 @@ app = FastAPI(
 
 # 添加中间件（后添加者位于外层，即请求先经过）。
 # 请求流：RequestID → CORS → Auth → Metrics → ProcessTime → 路由
-# RequestID 置于最外层，确保 request_id 覆盖所有请求/响应（含 401、异常响应）
+# RequestID 置于最外层，确保 request_id 覆盖所有请求/响应（含 401、业务异常等非 2xx 响应）
 app.add_middleware(ProcessTimeMiddleware)
 app.add_middleware(PrometheusMetricsMiddleware)
 app.add_middleware(AdminTokenAuthMiddleware)

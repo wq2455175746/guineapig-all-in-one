@@ -16,7 +16,7 @@ import httpx
 
 from app.config import settings
 from app.core.log import logger
-from app.core.llm_clients import get_llm_client
+from app.core.llm_clients import call_with_retry, get_llm_client
 from app.services.rag_retrieval_service import retrieve_rag_context
 from app.services.handle_llmservice import get_llm_response
 from app.services.langfuse_client import get_langfuse, is_langfuse_enabled
@@ -152,8 +152,9 @@ class CapabilityHandlers:
                         metadata={"handler": "handle_llm_chat", "has_system_prompt": True},
                     )
 
-                # 同步 OpenAI 调用放入线程池，避免阻塞事件循环
+                # 同步 OpenAI 调用放入线程池，避免阻塞事件循环（带退化重试）
                 completion = await asyncio.to_thread(
+                    call_with_retry,
                     client.chat.completions.create,
                     model=settings.LLM_MODEL_NAME,
                     messages=messages,
