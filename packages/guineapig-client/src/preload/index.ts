@@ -87,6 +87,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   }) => ipcRenderer.invoke('zip-and-download-logs', params),
 
   /**
+   * 获取应用运行状态（如 isDev）
+   */
+  getAppState: () => ipcRenderer.invoke('get-app-state'),
+
+  /**
    * 用系统默认应用打开外部链接（http/https 及自定义协议如 amapuri://）
    */
   openExternal: (url: string) => ipcRenderer.invoke('open-external', url),
@@ -107,10 +112,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
 })
 
 // ========== 全局快捷键 ==========
-// F12 切换开发者工具（所有渲染进程共享此 preload）
-document.addEventListener('keydown', (e: KeyboardEvent) => {
-  if (e.key === 'F12') {
-    e.preventDefault()
-    ipcRenderer.send('toggle-devtools')
-  }
-})
+// F12 切换开发者工具（仅开发模式生效）
+ipcRenderer.invoke('get-app-state')
+  .then((state: { isDev: boolean }) => {
+    if (!state.isDev) return
+    document.addEventListener('keydown', (e: KeyboardEvent) => {
+      if (e.key === 'F12') {
+        e.preventDefault()
+        ipcRenderer.send('toggle-devtools')
+      }
+    })
+  })
+  .catch(() => {})

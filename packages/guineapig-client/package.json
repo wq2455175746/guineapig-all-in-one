@@ -12,9 +12,10 @@
     "electron:build": "vue-tsc && vite build && electron-builder"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.13.1",
     "@electron-toolkit/preload": "^3.0.2",
+    "@modelcontextprotocol/sdk": "^1.13.1",
     "@primevue/themes": "^4.3.0",
+    "adm-zip": "^0.6.0",
     "archiver": "^8.0.0",
     "crypto-js": "^4.2.0",
     "echarts": "^5.5.0",
@@ -60,7 +61,10 @@
       {
         "from": "public/",
         "to": "public/",
-        "filter": ["*.key", "*.js"]
+        "filter": [
+          "*.key",
+          "*.js"
+        ]
       }
     ],
     "asar": true,
@@ -71,8 +75,20 @@
     ],
     "mac": {
       "target": [
-        { "target": "zip", "arch": ["arm64", "x64"] },
-        { "target": "dmg", "arch": ["arm64", "x64"] }
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
       ],
       "icon": "public/icon.icns",
       "hardenedRuntime": true,
@@ -90,7 +106,10 @@
       "uninstallerIcon": "public/icon.ico"
     },
     "linux": {
-      "target": ["AppImage", "deb"],
+      "target": [
+        "AppImage",
+        "deb"
+      ],
       "icon": "public/icon.png",
       "category": "Utility"
     }

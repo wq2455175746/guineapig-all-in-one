@@ -28,7 +28,7 @@ import { useRouter } from 'vue-router'
 import Avatar from 'primevue/avatar'
 import InputText from 'primevue/inputtext'
 import Button from 'primevue/button'
-import CryptoJS from 'crypto-js';
+import { encryptApiKey } from '../../utils/rsa'
 
 const router = useRouter()
 const apiKey = ref('')
@@ -46,11 +46,6 @@ onMounted(async () => {
   }
 })
 
-
-function getMd5(str: string): string {
-  return CryptoJS.MD5(str).toString(CryptoJS.enc.Hex);
-}
-
 async function handleLogin() {
   if (!apiKey.value) return
 
@@ -58,11 +53,13 @@ async function handleLogin() {
   loginError.value = ''
 
   try {
+    const encryptedKey = await encryptApiKey(apiKey.value)
+
     const res = await fetch(`${API_BASE_URL}/api/v1/client/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        api_key: getMd5(apiKey.value),
+        api_key: encryptedKey,
         device_id: machineId.value
       })
     })

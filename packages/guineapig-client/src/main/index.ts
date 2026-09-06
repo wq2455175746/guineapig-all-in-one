@@ -6,14 +6,74 @@ import { app, BrowserWindow, ipcMain, dialog, globalShortcut, shell } from 'elec
 import path from 'path'
 import fs from 'fs'
 import { fileURLToPath } from 'url'
-import { execSync, exec } from 'child_process'
+import { spawn } from 'child_process'
 import machineIdPkg from 'node-machine-id'
+import AdmZip from 'adm-zip'
 const { machineId } = machineIdPkg
 import { createWriteStream } from 'fs'
 import { logger } from './logger'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
+
+/**
+ * 允许通过 shell.openExternal 打开的协议白名单
+ * 拒绝 file: / javascript: / data: 等危险协议
+ */
+const ALLOWED_EXTERNAL_PROTOCOLS = new Set(['https:', 'http:', 'amapuri:'])
+
+/** execute-command 允许执行的已知二进制（首 token） */
+const ALLOWED_COMMAND_BINARIES = new Set(['npx', 'npm', 'node', 'python', 'python3', 'pip', 'pip3'])
+
+/** 命令参数合法字符集（拒绝 shell 元字符 / 注入） */
+const SAFE_ARG_TOKEN = /^[A-Za-z0-9_./:@+=~-]+$/
+
+function isAllowedExternalUrl(rawUrl: string): boolean {
+  try {
+    return ALLOWED_EXTERNAL_PROTOCOLS.has(new URL(rawUrl).protocol)
+  } catch {
+    return false
+  }
+}
+
+function isAllowedInternalUrl(rawUrl: string): boolean {
+  try {
+    const url = new URL(rawUrl)
+    if (isDev) {
+      return url.origin === new URL(getDevServerUrl()).origin
+    }
+    if (url.protocol === 'file:') {
+      const rendererDir = path.resolve(__dirname, '../renderer')
+      const resolved = path.resolve(decodeURIComponent(url.pathname))
+      return resolved === rendererDir || resolved.startsWith(rendererDir + path.sep)
+    }
+    return false
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 窗口安全防护：拦截 window.open / 站外导航
+ * 允许的 http(s)/自定义协议改走系统默认浏览器，其余一律 deny
+ */
+function attachWindowSecurity(win: BrowserWindow): void {
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (isAllowedExternalUrl(url)) {
+      shell.openExternal(url).catch(() => {})
+    }
+    return { action: 'deny' }
+  })
+
+  win.webContents.on('will-navigate', (event, url) => {
+    if (!isAllowedInternalUrl(url)) {
+      event.preventDefault()
+      if (isAllowedExternalUrl(url)) {
+        shell.openExternal(url).catch(() => {})
+      }
+    }
+  })
+}
 
 let mainWindow: BrowserWindow | null = null
 
@@ -37,7 +97,7 @@ function createWindow() {
       preload: path.join(__dirname, 'preload/index.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      webSecurity: false
+      sandbox: true
     },
 
     frame: true,
@@ -45,6 +105,8 @@ function createWindow() {
     backgroundColor: '#ffffff',
     title: 'guineapig-client'
   })
+
+  attachWindowSecurity(mainWindow)
 
   if (isDev) {
     mainWindow.loadURL(getDevServerUrl())
@@ -109,7 +171,7 @@ function createOverlayWindow(page: string, queryString?: string) {
       preload: path.join(__dirname, 'preload/index.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      webSecurity: false
+      sandbox: true
     },
 
     frame: true,
@@ -117,6 +179,8 @@ function createOverlayWindow(page: string, queryString?: string) {
     backgroundColor: '#ffffff',
     title: `${title} - guineapig-client`
   })
+
+  attachWindowSecurity(win)
 
   if (isDev) {
     const url = `${getDevServerUrl()}overlay.html?page=${page}${queryString ? `&${queryString}` : ''}`
@@ -171,8 +235,10 @@ app.on('before-quit', () => {
 
 /**
  * 切换 DevTools（通过 IPC 触发，renderer 侧可按 F12 调用）
+ * 仅开发模式生效，生产环境禁用
  */
 ipcMain.on('toggle-devtools', (event) => {
+  if (!isDev) return
   const win = BrowserWindow.fromWebContents(event.sender)
   if (win) {
     if (win.webContents.isDevToolsOpened()) {
@@ -181,6 +247,13 @@ ipcMain.on('toggle-devtools', (event) => {
       win.webContents.openDevTools()
     }
   }
+})
+
+/**
+ * 返回应用运行状态（preload 用它判断是否启用 DevTools 快捷键）
+ */
+ipcMain.handle('get-app-state', () => {
+  return { isDev }
 })
 
 // ==================== IPC 通信处理 ====================
@@ -242,6 +315,13 @@ ipcMain.on('close-window', (event) => {
  * 保存至 userData/temp/{dateDir}/{filename}
  */
 ipcMain.handle('save-temp-file', async (_event, data: { buffer: number[]; filename: string; dateDir?: string }) => {
+  const filename = path.basename(data.filename || '')
+  if (!filename) {
+    throw new Error('文件名无效')
+  }
+  if (data.dateDir && !/^\d{8}$/.test(data.dateDir)) {
+    throw new Error('日期目录格式无效')
+  }
   let tempDir = path.join(app.getPath('userData'), 'temp')
   if (data.dateDir) {
     tempDir = path.join(tempDir, data.dateDir)
@@ -249,19 +329,28 @@ ipcMain.handle('save-temp-file', async (_event, data: { buffer: number[]; filena
   if (!fs.existsSync(tempDir)) {
     fs.mkdirSync(tempDir, { recursive: true })
   }
-  const filePath = path.join(tempDir, data.filename)
+  const filePath = path.join(tempDir, filename)
   fs.writeFileSync(filePath, Buffer.from(data.buffer))
   return filePath
 })
 
 /**
  * 读取本地文件，返回 ArrayBuffer（用于音频播放等）
+ * 仅允许读取 userData 目录内的文件，防止任意文件读取
  */
 ipcMain.handle('read-local-file', async (_event, filePath: string) => {
-  if (!fs.existsSync(filePath)) {
+  const userDataRoot = path.resolve(app.getPath('userData'))
+  const resolved = path.isAbsolute(filePath)
+    ? path.resolve(filePath)
+    : path.resolve(userDataRoot, filePath)
+
+  if (resolved !== userDataRoot && !resolved.startsWith(userDataRoot + path.sep)) {
+    throw new Error('无权读取该文件')
+  }
+  if (!fs.existsSync(resolved)) {
     throw new Error('文件不存在')
   }
-  const buffer = fs.readFileSync(filePath)
+  const buffer = fs.readFileSync(resolved)
   return buffer.buffer as ArrayBuffer
 })
 
@@ -269,25 +358,24 @@ ipcMain.handle('read-local-file', async (_event, filePath: string) => {
  * 下载并解压 Skill zip 文件到 userData/skills/{skillName}/
  * 自动去除 zip 内公共顶层目录，确保只有一层 skillName
  * 如果同名 skill 已存在，直接覆盖
+ * 使用 JS 解压库（adm-zip），禁用 shell unzip（防命令注入/路径穿越）
  */
 ipcMain.handle('download-and-extract-skill', async (_event, data: { url: string; skillName: string }) => {
+  const skillName = path.basename(data.skillName || '')
+  if (!/^[A-Za-z0-9_-]+$/.test(skillName)) {
+    throw new Error('技能名称不合法')
+  }
+
   const skillsBase = path.join(app.getPath('userData'), 'skills')
-  const extractDir = path.join(skillsBase, data.skillName)
+  const extractDir = path.join(skillsBase, skillName)
 
   // 如果已存在则删除重建（覆盖）
   if (fs.existsSync(extractDir)) {
     fs.rmSync(extractDir, { recursive: true })
   }
 
-  // 先解压到临时目录以检测公共顶层目录
-  const tmpRoot = path.join(skillsBase, `._tmp_${data.skillName}`)
-  if (fs.existsSync(tmpRoot)) {
-    fs.rmSync(tmpRoot, { recursive: true })
-  }
-  fs.mkdirSync(tmpRoot, { recursive: true })
-
   // 下载 zip 到临时文件
-  const tmpZip = path.join(skillsBase, `${data.skillName}.zip`)
+  const tmpZip = path.join(skillsBase, `${skillName}.zip`)
   const response = await fetch(data.url)
   if (!response.ok) {
     throw new Error(`下载失败: ${response.statusText}`)
@@ -296,49 +384,62 @@ ipcMain.handle('download-and-extract-skill', async (_event, data: { url: string;
   fs.writeFileSync(tmpZip, buffer)
 
   try {
-    // 解压到临时目录
-    execSync(`unzip -o "${tmpZip}" -d "${tmpRoot}"`, { stdio: 'pipe', timeout: 30000 })
+    const zip = new AdmZip(buffer)
+    const entries = zip.getEntries()
+
+    // 校验并收集安全条目（防 ../ 穿越 / 绝对路径），跳过 __MACOSX / 隐藏目录
+    const safeEntries: { parts: string[]; data: Buffer }[] = []
+    const topLevel = new Set<string>()
+    const seenDirs = new Set<string>()
+
+    for (const entry of entries) {
+      const entryName = entry.entryName.replace(/\\/g, '/')
+      const parts = entryName.split('/').filter(Boolean)
+      if (parts.length === 0) continue
+
+      if (entryName.startsWith('/') || /^[a-zA-Z]:/.test(entryName)) {
+        throw new Error('ZIP 条目路径不合法')
+      }
+      if (parts.includes('..')) {
+        throw new Error('ZIP 条目路径不合法')
+      }
+      if (parts.some(p => p.startsWith('__MACOSX') || p.startsWith('.'))) continue
+
+      if (entry.isDirectory) {
+        seenDirs.add(parts[0])
+        continue
+      }
+      topLevel.add(parts[0])
+      safeEntries.push({ parts, data: entry.getData() })
+    }
 
     // 检测是否所有文件共享一个公共顶层目录
-    const entries = fs.readdirSync(tmpRoot).filter(n => !n.startsWith('__MACOSX') && !n.startsWith('.'))
     let commonPrefix: string | null = null
-
-    if (entries.length === 1) {
-      const only = entries[0]
-      const onlyPath = path.join(tmpRoot, only)
-      if (fs.statSync(onlyPath).isDirectory()) {
+    if (topLevel.size === 1) {
+      const only = [...topLevel][0]
+      const hasDeeper = safeEntries.some(e => e.parts.length > 1 && e.parts[0] === only)
+      if (seenDirs.has(only) || hasDeeper) {
         commonPrefix = only
       }
     }
 
-    if (commonPrefix) {
-      // 有公共顶层目录 — 将里面的内容上移一层
-      const innerDir = path.join(tmpRoot, commonPrefix)
-      const innerEntries = fs.readdirSync(innerDir)
-      fs.mkdirSync(extractDir, { recursive: true })
-      for (const entry of innerEntries) {
-        const src = path.join(innerDir, entry)
-        const dst = path.join(extractDir, entry)
-        fs.renameSync(src, dst)
+    fs.mkdirSync(extractDir, { recursive: true })
+    for (const { parts, data } of safeEntries) {
+      const rel = commonPrefix && parts[0] === commonPrefix ? parts.slice(1) : parts
+      if (rel.length === 0) continue
+      const dest = path.resolve(extractDir, ...rel)
+      if (!dest.startsWith(path.resolve(extractDir) + path.sep)) {
+        throw new Error('ZIP 解压路径越界')
       }
-    } else {
-      // 没有公共目录，直接移动所有文件
-      fs.mkdirSync(extractDir, { recursive: true })
-      for (const entry of entries) {
-        const src = path.join(tmpRoot, entry)
-        const dst = path.join(extractDir, entry)
-        fs.renameSync(src, dst)
-      }
+      fs.mkdirSync(path.dirname(dest), { recursive: true })
+      fs.writeFileSync(dest, data)
     }
-  } catch {
-    throw new Error('解压失败，请确认系统已安装 unzip')
+  } catch (err: any) {
+    throw new Error(`解压失败: ${err.message || '未知错误'}`)
   } finally {
     // 清理临时文件
     if (fs.existsSync(tmpZip)) {
       fs.unlinkSync(tmpZip)
-    }
-    if (fs.existsSync(tmpRoot)) {
-      fs.rmSync(tmpRoot, { recursive: true })
     }
   }
 
@@ -347,28 +448,163 @@ ipcMain.handle('download-and-extract-skill', async (_event, data: { url: string;
 
 /**
  * 在本地执行 CLI 命令（由 ChatPage 的 skill command dialog 触发）
- * 在 userData/skills/ 目录下执行，支持 shell/python/npx
+ * 在 userData/skills/ 目录下执行，仅允许白名单二进制，拒绝 shell 元字符注入
  */
-ipcMain.handle('execute-command', async (_event, cmd: {
+ipcMain.handle('execute-command', async (event, cmd: {
   type: string
   description: string
   command: string
   cwd?: string
   risk: string
 }) => {
-  const userDataPath = app.getPath('userData')
-  const workingDir = cmd.cwd ? path.join(userDataPath, cmd.cwd) : userDataPath
+  if (!cmd || typeof cmd.command !== 'string' || !cmd.command.trim()) {
+    throw new Error('命令为空')
+  }
+
+  const skillsBase = path.join(app.getPath('userData'), 'skills')
+  fs.mkdirSync(skillsBase, { recursive: true })
+
+  // cwd 限制在 userData/skills 下，禁止绝对路径与 ..
+  let workingDir = skillsBase
+  if (cmd.cwd) {
+    const raw = String(cmd.cwd).trim()
+    if (!raw) {
+      workingDir = skillsBase
+    } else {
+      if (path.isAbsolute(raw)) {
+        throw new Error('cwd 不允许绝对路径')
+      }
+      if (raw.split(/[\\/]/).includes('..')) {
+        throw new Error('cwd 不允许 .. 路径')
+      }
+      const resolved = path.resolve(skillsBase, raw)
+      if (resolved !== skillsBase && !resolved.startsWith(skillsBase + path.sep)) {
+        throw new Error('cwd 超出技能目录')
+      }
+      workingDir = resolved
+    }
+  }
+
+  // 非 low 风险命令需在主进程侧二次确认（不信任 renderer 传参）
+  if (cmd.risk !== 'low') {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    const opts: Electron.MessageBoxOptions = {
+      type: 'warning',
+      message: '确认执行命令？',
+      detail: `命令: ${cmd.command}\n风险等级: ${cmd.risk || '未知'}\n描述: ${cmd.description || '无'}`,
+      buttons: ['取消', '确认执行'],
+      defaultId: 1,
+      cancelId: 0,
+      noLink: true,
+    }
+    const { response } = win
+      ? await dialog.showMessageBox(win, opts)
+      : await dialog.showMessageBox(opts)
+    if (response !== 1) {
+      throw new Error('命令已取消')
+    }
+  }
+
+  // 解析命令并校验白名单（首 token 二进制 + 参数安全字符集）
+  const tokens = tokenizeCommand(cmd.command)
+  if (tokens.length === 0) {
+    throw new Error('命令为空')
+  }
+  const binary = tokens[0]
+  if (!isAllowedBinary(binary, workingDir, skillsBase)) {
+    throw new Error(`命令不在白名单内: ${binary}`)
+  }
+  const args = tokens.slice(1)
+  for (const arg of args) {
+    if (!SAFE_ARG_TOKEN.test(arg)) {
+      throw new Error(`命令参数包含非法字符: ${arg}`)
+    }
+  }
+
+  // 显式构造 env，避免隐式继承
+  const env: NodeJS.ProcessEnv = {
+    PATH: process.env.PATH || '',
+    HOME: process.env.HOME || '',
+    USER: process.env.USER || '',
+    SHELL: process.env.SHELL || '',
+    LANG: process.env.LANG || 'en_US.UTF-8',
+    LC_ALL: process.env.LC_ALL || process.env.LANG || 'en_US.UTF-8',
+    SYSTEMROOT: process.env.SYSTEMROOT || '',
+  }
+
+  // Windows 下 npx/npm 为 .cmd shim，需要 shell 执行；参数已通过安全校验
+  let bin = binary
+  let useShell = false
+  if (process.platform === 'win32') {
+    const lower = binary.toLowerCase()
+    if (lower === 'npx' || lower === 'npm') {
+      bin = `${lower}.cmd`
+      useShell = true
+    }
+  }
 
   return new Promise<{ stdout: string; stderr: string; exitCode: number }>((resolve) => {
-    exec(cmd.command, { cwd: workingDir, timeout: 300000 }, (err, stdout, stderr) => {
-      resolve({
-        stdout: stdout || '',
-        stderr: stderr || '',
-        exitCode: err ? (err.code || -1) : 0,
-      })
+    const child = spawn(bin, args, {
+      cwd: workingDir,
+      env,
+      shell: useShell,
+      timeout: 300000,
+      windowsHide: true,
+    })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.setEncoding('utf8')
+    child.stderr.setEncoding('utf8')
+    child.stdout.on('data', (d: string) => { stdout += d })
+    child.stderr.on('data', (d: string) => { stderr += d })
+    child.on('error', (err) => {
+      resolve({ stdout, stderr: stderr || err.message, exitCode: -1 })
+    })
+    child.on('close', (code) => {
+      resolve({ stdout, stderr, exitCode: code ?? -1 })
     })
   })
 })
+
+function tokenizeCommand(command: string): string[] {
+  const tokens: string[] = []
+  let current = ''
+  let quote: string | null = null
+  for (const ch of command) {
+    if (quote) {
+      if (ch === quote) {
+        quote = null
+      } else {
+        current += ch
+      }
+    } else if (ch === "'" || ch === '"') {
+      quote = ch
+    } else if (ch === ' ' || ch === '\t') {
+      if (current) {
+        tokens.push(current)
+        current = ''
+      }
+    } else {
+      current += ch
+    }
+  }
+  if (current) {
+    tokens.push(current)
+  }
+  return tokens
+}
+
+function isAllowedBinary(binary: string, workingDir: string, skillsBase: string): boolean {
+  const base = binary.toLowerCase()
+  if (ALLOWED_COMMAND_BINARIES.has(base)) return true
+  if (binary.includes('/') || binary.includes('\\')) {
+    const resolved = path.resolve(workingDir, binary)
+    if (resolved === skillsBase || resolved.startsWith(skillsBase + path.sep)) {
+      return fs.existsSync(resolved)
+    }
+  }
+  return false
+}
 
 // ==================== MCP 资源获取 ====================
 
@@ -501,9 +737,13 @@ ipcMain.handle('fetch-mcp-resources', async (_event, params: {
 // ==================== 打开外部链接 ====================
 
 /**
- * 用系统默认应用打开外部链接（支持 http/https 及自定义协议如 amapuri://）
+ * 用系统默认应用打开外部链接
+ * 仅允许协议白名单（https/http/amapuri），拒绝 file:/javascript: 等
  */
 ipcMain.handle('open-external', async (_event, url: string) => {
+  if (typeof url !== 'string' || !isAllowedExternalUrl(url)) {
+    throw new Error(`不允许打开该链接: ${url}`)
+  }
   await shell.openExternal(url)
 })
 

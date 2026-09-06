@@ -258,6 +258,11 @@ interface Window {
      * window.electronAPI.openExternal('amapuri://workInAmap/createWithToken?polymericId=xxx')
      */
     openExternal: (url: string) => Promise<void>
+
+    /**
+     * 获取应用运行状态（如 isDev，用于 DevTools 快捷键等开发功能开关）
+     */
+    getAppState: () => Promise<{ isDev: boolean }>
   }
 }
 
