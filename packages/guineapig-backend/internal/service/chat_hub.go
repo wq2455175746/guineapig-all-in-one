@@ -13,6 +13,7 @@ import (
 	"guineapig/internal/response"
 	"guineapig/pkg/plugin"
 	"guineapig/pkg/plugin/logger"
+	"guineapig/pkg/utils"
 	"io"
 	"net/http"
 	"strings"
@@ -80,6 +81,20 @@ func (c *ClientConnection) Close() {
 	if c.Conn != nil {
 		_ = c.Conn.Close()
 	}
+}
+
+// newClientStreamContext 返回随 WS 连接生命周期取消的 context：
+// 连接断开（done 关闭）或 ctx 被取消时，watch goroutine 退出，不泄漏。
+func (h *Hub) newClientStreamContext(client *ClientConnection) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		select {
+		case <-client.done:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	return ctx, cancel
 }
 
 func GetHub() *Hub {
@@ -291,8 +306,37 @@ func (h *Hub) streamAssistantReply(ctx context.Context, client *ClientConnection
 
 	convID := msgResp.ConversationId
 
+	// 可取消的 aiagent 请求上下文：随 WS 连接生命周期取消（断开/被替换即停），
+	// 同时注册 AiAgentConn 供 handleCancel / Unregister 取消
+	aiCtx, cancel := h.newClientStreamContext(client)
+	aiAgentConn := &AiAgentConn{
+		ConversationID: convID,
+		UserID:         client.UserID,
+		Cancel:         cancel,
+	}
+	h.mu.Lock()
+	h.aiAgentConns[convID] = aiAgentConn
+	h.mu.Unlock()
+
+	// 结果落库 context：WS 断开不影响消息终态写入（取消的 context 会使 DB 写失败，
+	// 导致消息永远停留在 streaming）
+	writeCtx, writeCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer writeCancel()
+
+	// 清理函数（流完成时取消 context 并清理 AiAgentConn）。
+	// 身份校验：只删除自己的注册项，避免覆盖同会话的新流。
+	cleanup := func() {
+		cancel()
+		h.mu.Lock()
+		if cur, ok := h.aiAgentConns[convID]; ok && cur == aiAgentConn {
+			delete(h.aiAgentConns, convID)
+		}
+		h.mu.Unlock()
+	}
+	defer cleanup()
+
 	// 1. 加载会话
-	conversation, err := model.MChatConversation.FindById(ctx, convID)
+	conversation, err := model.MChatConversation.FindById(aiCtx, convID)
 	if err != nil || conversation == nil {
 		h.sendError(client, "会话不存在")
 		return
@@ -306,31 +350,32 @@ func (h *Hub) streamAssistantReply(ctx context.Context, client *ClientConnection
 		Status:         "streaming",
 		Version:        1,
 	}
-	if err := assistantMsg.Create(ctx); err != nil {
+	if err := assistantMsg.Create(aiCtx); err != nil {
 		h.sendError(client, fmt.Sprintf("创建消息失败: %v", err))
 		return
 	}
 	assistantMsgID := assistantMsg.Id
+	aiAgentConn.MessageID = assistantMsgID
 
 	// 3. 构建 LLM 上下文
-	llmMessages, err := buildLLMMessages(ctx, conversation)
+	llmMessages, err := buildLLMMessages(aiCtx, conversation)
 	if err != nil {
-		_ = updateMessageStatus(ctx, assistantMsgID, "error", fmt.Sprintf("构建上下文失败: %v", err))
+		_ = updateMessageStatus(writeCtx, assistantMsgID, "error", fmt.Sprintf("构建上下文失败: %v", err))
 		h.sendError(client, fmt.Sprintf("构建上下文失败: %v", err))
 		return
 	}
 
 	// 4. 加载模型配置
-	modelConfig, err := loadModelConfig(ctx, conversation.ModelId, client.UserID)
+	modelConfig, err := loadModelConfig(aiCtx, conversation.ModelId, client.UserID)
 	if err != nil {
-		_ = updateMessageStatus(ctx, assistantMsgID, "error", fmt.Sprintf("加载模型配置失败: %v", err))
+		_ = updateMessageStatus(writeCtx, assistantMsgID, "error", fmt.Sprintf("加载模型配置失败: %v", err))
 		h.sendError(client, fmt.Sprintf("加载模型配置失败: %v", err))
 		return
 	}
 
 	// 5. 查询技能 + RAG 上下文
 	var skills []response.SkillInfo
-	if skillList, err := model.MResSkills.ListEnabledByUserId(ctx, client.UserID); err == nil {
+	if skillList, err := model.MResSkills.ListEnabledByUserId(aiCtx, client.UserID); err == nil {
 		for _, s := range skillList {
 			skills = append(skills, response.SkillInfo{
 				Name:        s.Name,
@@ -340,55 +385,29 @@ func (h *Hub) streamAssistantReply(ctx context.Context, client *ClientConnection
 		}
 	}
 
-	ragContext, _ := resolveRagContextFromLatestMessage(ctx, convID, client.UserID)
-
-	// 6. 可取消的 aiagent 请求上下文
-	aiCtx, cancel := context.WithCancel(ctx)
-
-	// 注册 AiAgentConn（用于后续 command_result 路由和取消）
-	aiAgentConn := &AiAgentConn{
-		ConversationID: convID,
-		MessageID:      assistantMsgID,
-		UserID:         client.UserID,
-		Cancel:         cancel,
-	}
-	h.mu.Lock()
-	h.aiAgentConns[convID] = aiAgentConn
-	h.mu.Unlock()
+	ragContext, _ := resolveRagContextFromLatestMessage(aiCtx, convID, client.UserID)
 
 	var commands []response.CommandItem
 	var fullContent string
 	var proxyErr error
 
-	// 清理函数（流完成时取消 context 并清理 AiAgentConn）
-	cleanup := func() {
-		cancel()
-		h.mu.Lock()
-		delete(h.aiAgentConns, convID)
-		h.mu.Unlock()
-	}
-
-	// 7. 调用 aiagent SSE 流并代理到 WS
+	// 6. 调用 aiagent SSE 流并代理到 WS
 	fullContent, commands, proxyErr = h.proxyAiAgentStream(aiCtx, convID, assistantMsgID, llmMessages, modelConfig, skills, client.UserID, req.WebSearchEnabled, ragContext, client)
 
-	// 8. 处理结果
+	// 7. 处理结果
 	if proxyErr != nil {
-		_ = updateMessageStatus(ctx, assistantMsgID, "error", proxyErr.Error())
+		_ = updateMessageStatus(writeCtx, assistantMsgID, "error", proxyErr.Error())
 		h.sendError(client, proxyErr.Error())
-		// 出错时直接清理
-		h.mu.Lock()
-		delete(h.aiAgentConns, convID)
-		h.mu.Unlock()
 	} else {
 		// 保存 commands
 		if len(commands) > 0 {
 			cmdJSON, _ := json.Marshal(commands)
 			cmdStr := string(cmdJSON)
-			_ = model.MChatMessage.UpdateCommands(ctx, assistantMsgID, &cmdStr)
+			_ = model.MChatMessage.UpdateCommands(writeCtx, assistantMsgID, &cmdStr)
 		}
 
 		// 更新 MySQL
-		_ = plugin.GetDB(ctx).Model(&model.ChatMessage{}).
+		_ = plugin.GetDB(writeCtx).Model(&model.ChatMessage{}).
 			Where("id = ?", assistantMsgID).
 			Updates(map[string]any{
 				"content":    fullContent,
@@ -417,13 +436,12 @@ func (h *Hub) streamAssistantReply(ctx context.Context, client *ClientConnection
 		})
 	}
 
-	// 10. 清理（无 commands 时已删 AiAgentConn；有 commands 时保留，由 handleCommandResult 后续删除）
-	cleanup()
-	_ = plugin.GetDB(ctx).Model(&model.ChatConversation{}).
+	// 8. 清理（defer cleanup）+ 会话状态更新
+	_ = plugin.GetDB(writeCtx).Model(&model.ChatConversation{}).
 		Where("id = ?", convID).
 		UpdateColumn("message_count", 1).Error
-	updateContextCache(ctx, client.UserID, convID)
-	updateLastActive(ctx, client.UserID, convID)
+	updateContextCache(writeCtx, client.UserID, convID)
+	updateLastActive(writeCtx, client.UserID, convID)
 }
 
 // proxyAiAgentStream 调用 aiagent SSE 流，代理事件到 WS
@@ -476,7 +494,7 @@ func (h *Hub) proxyAiAgentStream(
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
 
-	httpClient := &http.Client{Timeout: 120 * time.Second} // 2min（单轮 LLM 调用）
+	httpClient := utils.NewHTTPClient(120 * time.Second) // 2min（单轮 LLM 调用）
 	resp, err := httpClient.Do(httpReq)
 	if err != nil {
 		return "", nil, fmt.Errorf("请求 aiagent 失败: %w", err)
@@ -552,8 +570,6 @@ func (h *Hub) proxyAiAgentStream(
 // ========== Command Result 处理 ==========
 
 func (h *Hub) handleCommandResult(client *ClientConnection, env *response.WSEnvelope) {
-	ctx := context.Background()
-
 	convID := int64(0)
 	if env.Meta != nil {
 		convID = env.Meta.ConversationID
@@ -563,6 +579,31 @@ func (h *Hub) handleCommandResult(client *ClientConnection, env *response.WSEnve
 		return
 	}
 
+	// 可取消的 aiagent 请求上下文：随 WS 连接生命周期取消（断开即停）
+	aiCtx, cancel := h.newClientStreamContext(client)
+	aiAgentConn := &AiAgentConn{
+		ConversationID: convID,
+		UserID:         client.UserID,
+		Cancel:         cancel,
+	}
+	h.mu.Lock()
+	h.aiAgentConns[convID] = aiAgentConn
+	h.mu.Unlock()
+
+	// 结果落库 context：WS 断开不影响消息终态写入
+	writeCtx, writeCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer writeCancel()
+
+	cleanup := func() {
+		cancel()
+		h.mu.Lock()
+		if cur, ok := h.aiAgentConns[convID]; ok && cur == aiAgentConn {
+			delete(h.aiAgentConns, convID)
+		}
+		h.mu.Unlock()
+	}
+	defer cleanup()
+
 	// 1. 提取 results
 	resultsRaw, ok := env.Payload["results"]
 	if !ok {
@@ -571,7 +612,7 @@ func (h *Hub) handleCommandResult(client *ClientConnection, env *response.WSEnve
 	}
 
 	// 2. 加载会话
-	conversation, err := model.MChatConversation.FindById(ctx, convID)
+	conversation, err := model.MChatConversation.FindById(aiCtx, convID)
 	if err != nil || conversation == nil {
 		h.sendError(client, "会话不存在")
 		return
@@ -590,11 +631,12 @@ func (h *Hub) handleCommandResult(client *ClientConnection, env *response.WSEnve
 		Status:         "streaming",
 		Version:        1,
 	}
-	if err := assistantMsg.Create(ctx); err != nil {
+	if err := assistantMsg.Create(aiCtx); err != nil {
 		h.sendError(client, fmt.Sprintf("创建消息失败: %v", err))
 		return
 	}
 	assistantMsgID := assistantMsg.Id
+	aiAgentConn.MessageID = assistantMsgID
 
 	// 4. 发回 send_ack（让 client 创建新占位消息）
 	h.sendToClient(client, &response.WSEnvelope{
@@ -613,9 +655,9 @@ func (h *Hub) handleCommandResult(client *ClientConnection, env *response.WSEnve
 	})
 
 	// 5. 构建 LLM 上下文（不含当前轮结果）
-	llmMessages, err := buildLLMMessages(ctx, conversation)
+	llmMessages, err := buildLLMMessages(aiCtx, conversation)
 	if err != nil {
-		_ = updateMessageStatus(ctx, assistantMsgID, "error", fmt.Sprintf("构建上下文失败: %v", err))
+		_ = updateMessageStatus(aiCtx, assistantMsgID, "error", fmt.Sprintf("构建上下文失败: %v", err))
 		h.sendError(client, fmt.Sprintf("构建上下文失败: %v", err))
 		return
 	}
@@ -624,16 +666,16 @@ func (h *Hub) handleCommandResult(client *ClientConnection, env *response.WSEnve
 	llmMessages = injectCommandResultsIntoMessages(llmMessages, resultsRaw)
 
 	// 7. 加载模型配置
-	modelConfig, err := loadModelConfig(ctx, conversation.ModelId, client.UserID)
+	modelConfig, err := loadModelConfig(aiCtx, conversation.ModelId, client.UserID)
 	if err != nil {
-		_ = updateMessageStatus(ctx, assistantMsgID, "error", fmt.Sprintf("加载模型配置失败: %v", err))
+		_ = updateMessageStatus(aiCtx, assistantMsgID, "error", fmt.Sprintf("加载模型配置失败: %v", err))
 		h.sendError(client, fmt.Sprintf("加载模型配置失败: %v", err))
 		return
 	}
 
 	// 8. 查询技能 + RAG 上下文
 	var skills []response.SkillInfo
-	if skillList, err := model.MResSkills.ListEnabledByUserId(ctx, client.UserID); err == nil {
+	if skillList, err := model.MResSkills.ListEnabledByUserId(aiCtx, client.UserID); err == nil {
 		for _, s := range skillList {
 			skills = append(skills, response.SkillInfo{
 				Name:        s.Name,
@@ -642,43 +684,25 @@ func (h *Hub) handleCommandResult(client *ClientConnection, env *response.WSEnve
 			})
 		}
 	}
-	ragContext, _ := resolveRagContextFromLatestMessage(ctx, convID, client.UserID)
+	ragContext, _ := resolveRagContextFromLatestMessage(aiCtx, convID, client.UserID)
 
-	// 9. 可取消的 aiagent 请求上下文
-	aiCtx, cancel := context.WithCancel(ctx)
-	aiAgentConn := &AiAgentConn{
-		ConversationID: convID,
-		MessageID:      assistantMsgID,
-		UserID:         client.UserID,
-		Cancel:         cancel,
-	}
-	h.mu.Lock()
-	h.aiAgentConns[convID] = aiAgentConn
-	h.mu.Unlock()
-
-	// 10. 调用 aiagent SSE 流
+	// 9. 调用 aiagent SSE 流
 	fullContent, commands, proxyErr := h.proxyAiAgentStream(aiCtx, convID, assistantMsgID, llmMessages, modelConfig, skills, client.UserID, false, ragContext, client)
 
-	// 清理 AiAgentConn
-	h.mu.Lock()
-	delete(h.aiAgentConns, convID)
-	h.mu.Unlock()
-	cancel()
-
-	// 11. 处理结果
+	// 10. 处理结果
 	if proxyErr != nil {
-		_ = updateMessageStatus(ctx, assistantMsgID, "error", proxyErr.Error())
+		_ = updateMessageStatus(writeCtx, assistantMsgID, "error", proxyErr.Error())
 		h.sendError(client, proxyErr.Error())
 	} else {
 		// 保存 commands
 		if len(commands) > 0 {
 			cmdJSON, _ := json.Marshal(commands)
 			cmdStr := string(cmdJSON)
-			_ = model.MChatMessage.UpdateCommands(ctx, assistantMsgID, &cmdStr)
+			_ = model.MChatMessage.UpdateCommands(writeCtx, assistantMsgID, &cmdStr)
 		}
 
 		// 更新 MySQL
-		_ = plugin.GetDB(ctx).Model(&model.ChatMessage{}).
+		_ = plugin.GetDB(writeCtx).Model(&model.ChatMessage{}).
 			Where("id = ?", assistantMsgID).
 			Updates(map[string]any{
 				"content":    fullContent,
@@ -707,12 +731,12 @@ func (h *Hub) handleCommandResult(client *ClientConnection, env *response.WSEnve
 		})
 	}
 
-	// 12. 更新会话
-	_ = plugin.GetDB(ctx).Model(&model.ChatConversation{}).
+	// 11. 更新会话
+	_ = plugin.GetDB(writeCtx).Model(&model.ChatConversation{}).
 		Where("id = ?", convID).
 		UpdateColumn("message_count", 1).Error
-	updateContextCache(ctx, client.UserID, convID)
-	updateLastActive(ctx, client.UserID, convID)
+	updateContextCache(writeCtx, client.UserID, convID)
+	updateLastActive(writeCtx, client.UserID, convID)
 }
 
 // ========== Cancel 处理 ==========
@@ -780,17 +804,15 @@ func (h *Hub) sendToClient(client *ClientConnection, env *response.WSEnvelope) {
 		return
 	}
 
-	// 阻塞发送，超时 10s；防止缓冲区满时静默丢消息。
+	// 非阻塞发送：缓冲区满时 drop-and-log，绝不在发送侧阻塞（背压）。
 	// 连接已关闭（done）时直接丢弃，不再写入，避免向已关闭 channel 发送 panic。
-	timer := time.NewTimer(10 * time.Second)
-	defer timer.Stop()
-
 	select {
 	case <-client.done:
 		return
 	case client.Send <- data:
-	case <-timer.C:
-		logger.Errorf("[Hub] 客户端发送缓冲区满(超时10s): user_id=%d, msg_type=%s", client.UserID, env.Type)
+	default:
+		logger.Warnf("[Hub] 客户端发送缓冲区满, 丢弃消息: user_id=%d, msg_type=%s, buf_len=%d",
+			client.UserID, env.Type, len(client.Send))
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"guineapig/internal/response"
 	"guineapig/pkg/plugin"
 	"guineapig/pkg/plugin/logger"
+	"guineapig/pkg/utils"
 	"io"
 	"net/http"
 	"strings"
@@ -59,7 +60,7 @@ func (h *Hub) proxyAiAgentAgentStream(
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
 
-	httpClient := &http.Client{Timeout: 300 * time.Second} // 5min（多步 DAG 执行）
+	httpClient := utils.NewHTTPClient(300 * time.Second) // 5min（多步 DAG 执行）
 	resp, err := httpClient.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("请求 aiagent agent 失败: %w", err)
@@ -454,16 +455,37 @@ func (h *Hub) handleAgentSend(client *ClientConnection, env *response.WSEnvelope
 	logger.Infof("[AgentSend] 请求 aiagent agent: user_id=%d, conv_id=%d, content='%s'",
 		client.UserID, convID, truncateString(req.Content, 50))
 
-	// 5. 异步调用 aiagent
+	// 5. 可取消的 aiagent 请求上下文：随 WS 连接生命周期取消（断开即停），
+	//    同时注册 AiAgentConn 供 handleCancel / Unregister 取消
+	aiCtx, cancel := h.newClientStreamContext(client)
+	aiAgentConn := &AiAgentConn{
+		ConversationID: convID,
+		MessageID:      userMsgID,
+		UserID:         client.UserID,
+		Cancel:         cancel,
+	}
+	h.mu.Lock()
+	h.aiAgentConns[convID] = aiAgentConn
+	h.mu.Unlock()
+
+	// 6. 异步调用 aiagent
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
 				logger.Errorf("[AgentSend] goroutine panic: user_id=%d, conv_id=%d, err=%v", client.UserID, convID, r)
 			}
 		}()
+		defer func() {
+			cancel()
+			h.mu.Lock()
+			if cur, ok := h.aiAgentConns[convID]; ok && cur == aiAgentConn {
+				delete(h.aiAgentConns, convID)
+			}
+			h.mu.Unlock()
+		}()
 		var contentBuf strings.Builder
 		finalData, proxyErr := h.proxyAiAgentAgentStream(
-			ctx, convID, userMsgID, agentReq, client, client.UserID, &contentBuf,
+			aiCtx, convID, userMsgID, agentReq, client, client.UserID, &contentBuf,
 		)
 
 		if proxyErr != nil {
@@ -579,7 +601,7 @@ func (h *Hub) callAiAgentAgentControl(path string, body map[string]any) error {
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	httpClient := &http.Client{Timeout: 10 * time.Second}
+	httpClient := utils.NewHTTPClient(10 * time.Second)
 	resp, err := httpClient.Do(httpReq)
 	if err != nil {
 		return fmt.Errorf("发送控制信号失败: %w", err)

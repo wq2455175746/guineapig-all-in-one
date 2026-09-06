@@ -13,11 +13,13 @@ func UUID() string {
 }
 
 func NewContext(e echo.Context) context.Context {
-	// 从 echo.Context 获取 requestId
-	requestId := e.Get("requestId")
+	// 从请求 context 派生，保证客户端断开/超时能向下游（DB/Redis/HTTP）传播取消
+	ctx := e.Request().Context()
 
-	// 创建一个新的 context，并将 requestId 放入其中
-	ctx := context.WithValue(context.Background(), "requestId", requestId)
+	// 保留 requestId 供日志链路追踪
+	if requestId := e.Get("requestId"); requestId != nil {
+		ctx = context.WithValue(ctx, "requestId", requestId)
+	}
 
 	return ctx
 }

@@ -209,7 +209,7 @@ func sendTestRequest(ctx context.Context, targetURL string, reqBody []byte, head
 		headerFn(httpReq)
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := utils.NewHTTPClient(10 * time.Second)
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return &response.AiModelTestResponse{Connected: false, Message: fmt.Sprintf("连接失败: %v", err)}

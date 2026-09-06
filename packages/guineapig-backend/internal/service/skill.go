@@ -10,6 +10,7 @@ import (
 	"guineapig/internal/model"
 	"guineapig/internal/request"
 	"guineapig/internal/response"
+	"guineapig/pkg/utils"
 	"io"
 	"net/http"
 	"time"
@@ -165,7 +166,7 @@ func callAiAgentSkillProcess(ctx context.Context, objectKey string) (*SkillAiAge
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 120 * time.Second}
+	client := utils.NewHTTPClient(120 * time.Second)
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("skill 解析请求失败: %w", err)

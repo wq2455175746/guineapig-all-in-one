@@ -9,6 +9,7 @@ import (
 	"guineapig/internal/request"
 	"guineapig/pkg/plugin"
 	"guineapig/pkg/plugin/logger"
+	"guineapig/pkg/utils"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -194,42 +195,50 @@ func resolveRagContextFromLatestMessage(ctx context.Context, conversationId, use
 
 // resolveRagContext 从 file_ids 列表解析 RAG 配置
 func resolveRagContext(ctx context.Context, fileIds []int64, userId int64) (*RagContext, error) {
-	// 1. 查询所有文件，提取唯一 res_rag_id 集合
+	// 0. 单次解析的 DB 操作统一加超时，避免流式 goroutine 中 DB 挂起
+	ctx, cancel := context.WithTimeout(ctx, utils.DBQueryTimeout)
+	defer cancel()
+
+	// 1. 批量查询所有文件，提取唯一 res_rag_id 集合
 	ragIdSet := make(map[int64]struct{})
-	for _, fileId := range fileIds {
-		file, err := model.MResFiles.FindById(ctx, fileId)
-		if err != nil || file == nil {
-			logger.Warnf("[RAG] 文件不存在: file_id=%d, err=%v", fileId, err)
-			continue
+	if len(fileIds) > 0 {
+		files, err := model.MResFiles.FindByIds(ctx, fileIds)
+		if err != nil {
+			return nil, fmt.Errorf("查询文件失败: %w", err)
 		}
-		if file.EmbeddingConfig == nil || *file.EmbeddingConfig == "" {
-			logger.Warnf("[RAG] 文件无 embedding_config: file_id=%d", fileId)
-			continue
-		}
-		var cfg struct {
-			ResRagId int64 `json:"res_rag_id"`
-		}
-		if err := json.Unmarshal([]byte(*file.EmbeddingConfig), &cfg); err != nil {
-			logger.Warnf("[RAG] 解析 embedding_config 失败: file_id=%d, err=%v", fileId, err)
-			continue
-		}
-		if cfg.ResRagId > 0 {
-			ragIdSet[cfg.ResRagId] = struct{}{}
+		for _, file := range files {
+			if file.EmbeddingConfig == nil || *file.EmbeddingConfig == "" {
+				continue
+			}
+			var cfg struct {
+				ResRagId int64 `json:"res_rag_id"`
+			}
+			if err := json.Unmarshal([]byte(*file.EmbeddingConfig), &cfg); err != nil {
+				logger.Warnf("[RAG] 解析 embedding_config 失败: file_id=%d, err=%v", file.Id, err)
+				continue
+			}
+			if cfg.ResRagId > 0 {
+				ragIdSet[cfg.ResRagId] = struct{}{}
+			}
 		}
 	}
 	if len(ragIdSet) == 0 {
 		return nil, nil
 	}
 
-	// 2. 查询各 RAG 的集合名称，收集唯一的模型 ID
+	// 2. 批量查询各 RAG 的集合名称，收集唯一的模型 ID
+	ragIds := make([]int64, 0, len(ragIdSet))
+	for ragId := range ragIdSet {
+		ragIds = append(ragIds, ragId)
+	}
+	rags, err := model.MResRags.FindByIds(ctx, ragIds)
+	if err != nil {
+		return nil, fmt.Errorf("查询知识库失败: %w", err)
+	}
+
 	var ragNames []string
 	var embeddingModelId, rerankerModelId int64
-	for ragId := range ragIdSet {
-		rag, err := model.MResRags.FindById(ctx, ragId)
-		if err != nil || rag == nil {
-			logger.Warnf("[RAG] 知识库不存在: rag_id=%d, err=%v", ragId, err)
-			continue
-		}
+	for _, rag := range rags {
 		ragNames = append(ragNames, rag.Name)
 		if embeddingModelId == 0 && rag.EmbeddingModelId > 0 {
 			embeddingModelId = rag.EmbeddingModelId

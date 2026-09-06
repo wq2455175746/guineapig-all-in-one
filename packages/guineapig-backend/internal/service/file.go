@@ -15,6 +15,7 @@ import (
 	"guineapig/internal/request"
 	"guineapig/internal/response"
 	"guineapig/pkg/plugin"
+	"guineapig/pkg/utils"
 
 	"github.com/google/uuid"
 )
@@ -345,6 +346,10 @@ type aiagentEmbedResponse struct {
 }
 
 func callAiAgentEmbedFile(ctx context.Context, params map[string]any) {
+	// 后台任务 context：整体 30s 超时，避免 goroutine 悬挂（含错误回写 DB）
+	ctx, cancel := context.WithTimeout(ctx, utils.HTTPRequestTimeout)
+	defer cancel()
+
 	baseURL := config.Global.AiAgent.BaseUrl
 	if baseURL == "" {
 		errMsg := "AIAGENT_BASE_URL 未配置，跳过 aiagent 调用"
@@ -372,7 +377,7 @@ func callAiAgentEmbedFile(ctx context.Context, params map[string]any) {
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := utils.NewHTTPClient(30 * time.Second)
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		errMsg := fmt.Sprintf("调用 aiagent 失败: %v", err)
@@ -392,6 +397,10 @@ func callAiAgentEmbedFile(ctx context.Context, params map[string]any) {
 }
 
 func callAiAgentDeleteEmbeddings(ctx context.Context, params map[string]any) {
+	// 后台任务 context：整体 30s 超时，避免 goroutine 悬挂
+	ctx, cancel := context.WithTimeout(ctx, utils.HTTPRequestTimeout)
+	defer cancel()
+
 	baseURL := config.Global.AiAgent.BaseUrl
 	if baseURL == "" {
 		log.Printf("[DeleteEmbeddings] AIAGENT_BASE_URL 未配置，跳过 Milvus 清理")
@@ -413,7 +422,7 @@ func callAiAgentDeleteEmbeddings(ctx context.Context, params map[string]any) {
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := utils.NewHTTPClient(30 * time.Second)
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		log.Printf("[DeleteEmbeddings] 调用 aiagent 删除嵌入失败: %v", err)

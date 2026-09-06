@@ -107,6 +107,8 @@ func (*ResSkills) List(ctx context.Context, req *request.SkillListRequest) ([]*R
 	if req.PageSize > 0 && req.PageNum > 0 {
 		offset := (req.PageNum - 1) * req.PageSize
 		query = query.Offset(offset).Limit(req.PageSize)
+	} else {
+		query = query.Limit(MaxListLimit)
 	}
 
 	query = query.Order("id desc")

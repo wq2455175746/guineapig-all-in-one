@@ -100,6 +100,8 @@ func (*ChatOtel) List(ctx context.Context, req *request.OtelListRequest) ([]*Cha
 	if req.PageSize > 0 && req.PageNum > 0 {
 		offset := (req.PageNum - 1) * req.PageSize
 		query = query.Offset(offset).Limit(req.PageSize)
+	} else {
+		query = query.Limit(MaxListLimit)
 	}
 
 	query = query.Order("id desc")
@@ -118,6 +120,7 @@ func (*ChatOtel) ListByStatDate(ctx context.Context, userId int64, statDate stri
 	err := plugin.GetDB(ctx).
 		Where("user_id = ? AND stat_date = ?", userId, statDate).
 		Order("id desc").
+		Limit(MaxListLimit).
 		Find(&items).Error
 	return items, err
 }

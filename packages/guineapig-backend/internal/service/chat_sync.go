@@ -11,6 +11,7 @@ import (
 	"guineapig/internal/model"
 	"guineapig/pkg/plugin"
 	"guineapig/pkg/plugin/logger"
+	"guineapig/pkg/utils"
 	"net/http"
 	"strings"
 	"time"
@@ -200,7 +201,7 @@ func callAiAgentLLM(ctx context.Context, modelConfig *ModelConfig, messages []ma
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 120 * time.Second}
+	client := utils.NewHTTPClient(120 * time.Second)
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return "", fmt.Errorf("请求 AiAgent 失败: %w", err)

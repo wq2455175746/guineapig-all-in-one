@@ -12,6 +12,7 @@ import (
 	"guineapig/internal/response"
 	"guineapig/pkg/plugin"
 	"guineapig/pkg/plugin/logger"
+	"guineapig/pkg/utils"
 	"io"
 	"log"
 	"net/http"
@@ -290,6 +291,7 @@ func CreateMemorySummary(ctx context.Context, req *request.MemorySummarizeReques
 		Select("conversation_id, role, content, created_at").
 		Where("conversation_id IN ? AND created_at BETWEEN ? AND ?", convIds, startTime, endTime).
 		Order("created_at ASC").
+		Limit(1000).
 		Find(&msgs).Error; err != nil {
 		return 0, fmt.Errorf("查询消息失败: %w", err)
 	}
@@ -385,7 +387,9 @@ func CreateMemorySummary(ctx context.Context, req *request.MemorySummarizeReques
 				log.Printf("panic in forwardToAiAgent: %v", r)
 			}
 		}()
-		forwardCtx := context.Background()
+		// 后台任务 context：整体 5min 超时，避免 goroutine 悬挂
+		forwardCtx, cancel := context.WithTimeout(context.Background(), utils.AsyncTaskTimeout)
+		defer cancel()
 		if err := forwardToAiAgent(forwardCtx, aiAgentReq); err != nil {
 			log.Printf("转发记忆归纳到 aiagent 失败: %v", err)
 		}
@@ -395,6 +399,10 @@ func CreateMemorySummary(ctx context.Context, req *request.MemorySummarizeReques
 }
 
 func forwardToAiAgent(ctx context.Context, req *AiAgentMemoryRequest) error {
+	// 出站 HTTP 调用统一加超时（30s），与共享 client 超时一致
+	ctx, cancel := context.WithTimeout(ctx, utils.HTTPRequestTimeout)
+	defer cancel()
+
 	body, err := json.Marshal(req)
 	if err != nil {
 		return fmt.Errorf("序列化失败: %w", err)
@@ -413,7 +421,7 @@ func forwardToAiAgent(ctx context.Context, req *AiAgentMemoryRequest) error {
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := utils.NewHTTPClient(30 * time.Second)
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return fmt.Errorf("请求 aiagent 失败: %w", err)

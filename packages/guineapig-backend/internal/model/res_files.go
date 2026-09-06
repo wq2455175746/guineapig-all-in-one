@@ -112,6 +112,21 @@ func (*ResFiles) FindById(ctx context.Context, id int64) (*ResFiles, error) {
 	return &m, nil
 }
 
+// FindByIds 批量按 ID 查询文件（供 RAG 上下文解析等场景消除 N+1）。
+func (*ResFiles) FindByIds(ctx context.Context, ids []int64) ([]*ResFiles, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	var items []*ResFiles
+	err := plugin.GetDB(ctx).Model(&ResFiles{}).
+		Where("id IN ? AND deleted_at IS NULL", ids).
+		Find(&items).Error
+	if err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 func (*ResFiles) FindByUserIdAndName(ctx context.Context, userId int64, name string) (*ResFiles, error) {
 	var m ResFiles
 	err := plugin.GetDB(ctx).Model(&ResFiles{}).
@@ -150,6 +165,8 @@ func (*ResFiles) List(ctx context.Context, req *request.FileListRequest) ([]*Res
 	if req.PageSize > 0 && req.PageNum > 0 {
 		offset := (req.PageNum - 1) * req.PageSize
 		query = query.Offset(offset).Limit(req.PageSize)
+	} else {
+		query = query.Limit(MaxListLimit)
 	}
 	query = query.Order("id desc")
 

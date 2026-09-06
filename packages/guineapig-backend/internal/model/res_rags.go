@@ -84,6 +84,21 @@ func (*ResRags) FindById(ctx context.Context, id int64) (*ResRags, error) {
 	return &m, nil
 }
 
+// FindByIds 批量按 ID 查询知识库（供 RAG 上下文解析等场景消除 N+1）。
+func (*ResRags) FindByIds(ctx context.Context, ids []int64) ([]*ResRags, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	var items []*ResRags
+	err := plugin.GetDB(ctx).Model(&ResRags{}).
+		Where("id IN ? AND deleted_at IS NULL", ids).
+		Find(&items).Error
+	if err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 func (*ResRags) FindByUserIdAndName(ctx context.Context, userId int64, name string) (*ResRags, error) {
 	var m ResRags
 	err := plugin.GetDB(ctx).Model(&ResRags{}).
@@ -118,6 +133,8 @@ func (*ResRags) List(ctx context.Context, req *request.RagListRequest) ([]*ResRa
 	if req.PageSize > 0 && req.PageNum > 0 {
 		offset := (req.PageNum - 1) * req.PageSize
 		query = query.Offset(offset).Limit(req.PageSize)
+	} else {
+		query = query.Limit(MaxListLimit)
 	}
 
 	query = query.Order("id desc")

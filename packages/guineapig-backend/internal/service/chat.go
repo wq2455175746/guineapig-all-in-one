@@ -11,6 +11,7 @@ import (
 	"guineapig/internal/request"
 	"guineapig/internal/response"
 	"guineapig/pkg/plugin"
+	"guineapig/pkg/utils"
 	"io"
 	"net/http"
 	"strings"
@@ -175,7 +176,7 @@ func callAiAgentASR(ctx context.Context, objectKey string) (string, error) {
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 60 * time.Second}
+	client := utils.NewHTTPClient(60 * time.Second)
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return "", fmt.Errorf("ASR 请求失败: %w", err)
