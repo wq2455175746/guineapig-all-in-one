@@ -138,30 +138,12 @@ import Dialog from 'primevue/dialog'
 import Select from 'primevue/select'
 import { API_ENDPOINTS } from '@/config/api'
 import request from '@/config/axios'
+import { useUserOptions } from '@/composables/useUserOptions'
 
 const toast = useToast()
 
 const filterUserId = ref(null)
-const userOptions = ref([])
-const userMap = ref({})
-
-async function loadUsers() {
-  try {
-    const res = await request.get(API_ENDPOINTS.USERS.LIST, {
-      params: { pageSize: 999, pageNum: 1 }
-    })
-    if (res.data?.code === 0) {
-      const users = res.data.result?.users || []
-      userOptions.value = users.map(u => ({
-        id: u.id,
-        label: `${u.name || u.username} (ID: ${u.id})`
-      }))
-      users.forEach(u => { userMap.value[u.id] = u.name || u.username })
-    }
-  } catch (e) {
-    console.error('加载用户列表失败:', e)
-  }
-}
+const { userOptions, userMap, loadUsers } = useUserOptions()
 
 function getUserLabel(userId) {
   return userMap.value[userId] || `用户#${userId}`

@@ -81,8 +81,10 @@ import InputOtp from 'primevue/inputotp'
 import Button from 'primevue/button'
 import { API_ENDPOINTS } from '@/config/api'
 import request from '@/config/axios'
+import { useUserOptions } from '@/composables/useUserOptions'
 
 const toast = useToast()
+const { refreshUsers } = useUserOptions()
 
 const email = ref('')
 const code = ref('')
@@ -110,6 +112,7 @@ async function handleRegister() {
       apiKey.value = res.data.result.api_key
       registered.value = true
       toast.add({ severity: 'success', summary: '注册成功', detail: 'API Key 已生成', life: 3000 })
+      refreshUsers()
     } else {
       toast.add({ severity: 'error', summary: '注册失败', detail: res.data?.message || '未知错误', life: 3000 })
     }

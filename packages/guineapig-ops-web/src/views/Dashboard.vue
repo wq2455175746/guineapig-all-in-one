@@ -80,12 +80,13 @@ import Button from 'primevue/button'
 import * as echarts from 'echarts'
 import { API_ENDPOINTS } from '@/config/api'
 import request from '@/config/axios'
+import { useUserOptions } from '@/composables/useUserOptions'
 
 const toast = useToast()
 
 const selectedUserId = ref(null)
-const userOptions = ref([])
 const loading = ref(false)
+const { userOptions, totalUsers, loadUsers } = useUserOptions()
 
 const summaryData = ref({
   totalUsers: '-',
@@ -104,50 +105,34 @@ let tokenChart = null
 let agentChart = null
 let fileChart = null
 
+function disposeChart(chart) {
+  const obs = chart?._resizeObserver
+  obs?.disconnect()
+  chart?.dispose()
+}
+
+function disposeChartByEl(el) {
+  if (!el) return
+  disposeChart(echarts.getInstanceByDom(el))
+}
+
 onMounted(async () => {
   await loadUsers()
   await loadDashboard()
 })
 
 onBeforeUnmount(() => {
-  const disposeChart = (chart) => {
-    const obs = chart?._resizeObserver
-    obs?.disconnect()
-    chart?.dispose()
-  }
   disposeChart(requestChart)
   disposeChart(tokenChart)
   disposeChart(agentChart)
   disposeChart(fileChart)
 })
 
-async function loadUsers() {
-  try {
-    const res = await request.get(API_ENDPOINTS.USERS.LIST, {
-      params: { pageSize: 999, pageNum: 1 }
-    })
-    if (res.data?.code === 0) {
-      const users = res.data.result?.users || []
-      userOptions.value = users.map(u => ({
-        id: u.id,
-        label: `${u.name || u.username} (ID: ${u.id})`
-      }))
-    }
-  } catch (e) {
-    console.error('加载用户列表失败:', e)
-  }
-}
-
 async function loadDashboard() {
   loading.value = true
   try {
-    // Load total users
-    const userRes = await request.get(API_ENDPOINTS.USERS.LIST, {
-      params: { pageSize: 1, pageNum: 1 }
-    })
-    if (userRes.data?.code === 0) {
-      summaryData.value.totalUsers = userRes.data.result?.total || 0
-    }
+    // Reuse the total fetched by loadUsers (shared cache), no extra USERS.LIST call
+    summaryData.value.totalUsers = totalUsers.value || 0
 
     const endDate = formatDate(new Date())
     const start = new Date()
@@ -155,12 +140,16 @@ async function loadDashboard() {
     const startDate = formatDate(start)
 
     await nextTick()
-    await Promise.all([
+    const [reqChart, tokChart, agtChart, fileChartInstance] = await Promise.all([
       loadChart('request_count', startDate, endDate, requestChartRef, (v) => { summaryData.value.totalRequests = calcTotal(v) }),
       loadChart('token_usage', startDate, endDate, tokenChartRef, (v) => { summaryData.value.totalTokens = calcTotal(v) }),
       loadChart('agent_mode_count', startDate, endDate, agentChartRef, (v) => {}),
       loadFileChart(startDate, endDate)
     ])
+    requestChart = reqChart
+    tokenChart = tokChart
+    agentChart = agtChart
+    fileChart = fileChartInstance
   } catch (e) {
     console.error('Dashboard加载失败:', e)
   } finally {
@@ -187,13 +176,15 @@ async function loadChart(chart, startDate, endDate, chartRef, done) {
     if (res.data?.code === 0 && res.data?.result) {
       const data = res.data.result
       done(data)
-      renderChart(chartRef.value, data, getChartColors(chart))
+      return renderChart(chartRef.value, data, getChartColors(chart))
     } else {
       done({ xAxis: [], series: [] })
+      return null
     }
   } catch (e) {
     console.error(`加载图表 ${chart} 失败:`, e)
     done({ xAxis: [], series: [] })
+    return null
   }
 }
 
@@ -214,7 +205,7 @@ async function loadFileChart(startDate, endDate) {
         const name = typeNames[f.file_type] || '其他'
         typeCount[name] = (typeCount[name] || 0) + 1
       })
-      renderPieChart(fileChartRef.value, Object.keys(typeCount), Object.values(typeCount))
+      return renderPieChart(fileChartRef.value, Object.keys(typeCount), Object.values(typeCount))
     }
   } catch (e) {
     console.error('加载文件图表失败:', e)
@@ -222,7 +213,9 @@ async function loadFileChart(startDate, endDate) {
 }
 
 function renderChart(el, data, colors) {
-  if (!el || !data?.xAxis?.length) return null
+  if (!el) return null
+  disposeChartByEl(el)
+  if (!data?.xAxis?.length) return null
 
   let chart
   try {
@@ -274,7 +267,9 @@ function renderChart(el, data, colors) {
 }
 
 function renderPieChart(el, names, values) {
-  if (!el || !names?.length) return null
+  if (!el) return null
+  disposeChartByEl(el)
+  if (!names?.length) return null
 
   let chart
   try {
@@ -317,12 +312,7 @@ function getChartColors(chart) {
 }
 
 function onUserChange() {
-  // Dispose existing charts
-  const disposeChart = (chart) => {
-    const obs = chart?._resizeObserver
-    obs?.disconnect()
-    chart?.dispose()
-  }
+  // Dispose existing charts before reloading
   disposeChart(requestChart); requestChart = null
   disposeChart(tokenChart); tokenChart = null
   disposeChart(agentChart); agentChart = null
