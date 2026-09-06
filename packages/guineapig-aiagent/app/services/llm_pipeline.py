@@ -9,6 +9,7 @@ Pipeline 按序串行执行 Processors，任何 Processor 设置 ctx.error 会�
 2. 在 Pipeline 的 processors 列表中按序插入
 """
 
+import asyncio
 import json
 import inspect
 from dataclasses import dataclass, field
@@ -196,7 +197,9 @@ class RAGRetrievalProcessor(BaseProcessor):
         from app.config import settings
 
         try:
-            rag_content = retrieve_rag_context(
+            # 同步阻塞调用（embedding HTTP + Milvus + rerank HTTP）放入线程池
+            rag_content = await asyncio.to_thread(
+                retrieve_rag_context,
                 rag_names=rag_ctx["rag_names"],
                 user_id=ctx.user_id,
                 query=user_message,

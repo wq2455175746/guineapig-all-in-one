@@ -78,7 +78,7 @@ def _get_llm_client():
         _model_name = os.getenv("LLM_MODEL_NAME", "deepseek-chat")
         if not api_key:
             raise ValueError("API_KEY not set in .env")
-        _llm_client = OpenAI(api_key=api_key, base_url=base_url)
+        _llm_client = OpenAI(api_key=api_key, base_url=base_url, timeout=120.0)
         logger.info(f"LLM client ready: model={_model_name}")
     return _llm_client, _model_name
 
@@ -116,6 +116,7 @@ def step2_asr(audio_path: str) -> str:
         resp = requests.post(
             ASR_API_URL,
             files={"file": (os.path.basename(audio_path), f, "audio/mpeg")},
+            timeout=(5, 60),
         )
 
     if resp.status_code != 200:
@@ -202,6 +203,7 @@ def step4_tts(text: str) -> str:
                 "prompt_text": (None, PROMPT_TEXT),
                 "prompt_wav": ("prompt.wav", f, "audio/wav"),
             },
+            timeout=(5, 60),
         )
 
     if resp.status_code != 200:

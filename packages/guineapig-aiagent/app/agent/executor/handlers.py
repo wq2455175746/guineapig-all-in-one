@@ -133,7 +133,9 @@ class CapabilityHandlers:
                 from openai import OpenAI
 
                 client = OpenAI(
-                    api_key=settings.LLM_API_KEY, base_url=settings.LLM_BASE_URL
+                    api_key=settings.LLM_API_KEY,
+                    base_url=settings.LLM_BASE_URL,
+                    timeout=120.0,
                 )
                 messages = [
                     {"role": "system", "content": system_prompt},
@@ -152,7 +154,9 @@ class CapabilityHandlers:
                         metadata={"handler": "handle_llm_chat", "has_system_prompt": True},
                     )
 
-                completion = client.chat.completions.create(
+                # 同步 OpenAI 调用放入线程池，避免阻塞事件循环
+                completion = await asyncio.to_thread(
+                    client.chat.completions.create,
                     model=settings.LLM_MODEL_NAME,
                     messages=messages,
                     temperature=params.get("temperature", 0.7),
@@ -172,7 +176,7 @@ class CapabilityHandlers:
                     langfuse_gen.update(**update_kwargs)
                     langfuse_gen.end()
             else:
-                response_text = get_llm_response(prompt)
+                response_text = await asyncio.to_thread(get_llm_response, prompt)
 
             return {"result": response_text, "char_count": len(response_text)}
 

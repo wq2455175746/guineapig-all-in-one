@@ -35,7 +35,11 @@ class DAGGenerator:
         """获取 LLM 客户端"""
         if not settings.LLM_API_KEY:
             raise ValueError("LLM_API_KEY not set in .env — 无法生成 DAG")
-        client = OpenAI(api_key=settings.LLM_API_KEY, base_url=settings.LLM_BASE_URL)
+        client = OpenAI(
+            api_key=settings.LLM_API_KEY,
+            base_url=settings.LLM_BASE_URL,
+            timeout=120.0,
+        )
         return client, settings.LLM_MODEL_NAME
 
     @classmethod

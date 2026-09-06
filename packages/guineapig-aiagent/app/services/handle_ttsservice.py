@@ -42,6 +42,7 @@ def handle_tts(text: str, tts_dir: str, prompt_wav: str) -> str:
                 "prompt_text": (None, settings.TTS_PROMPT_TEXT),
                 "prompt_wav": ("prompt.wav", f, "audio/wav"),
             },
+            timeout=(5, 60),
         )
 
     if resp.status_code != 200:

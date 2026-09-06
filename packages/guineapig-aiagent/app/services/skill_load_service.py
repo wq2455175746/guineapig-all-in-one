@@ -5,6 +5,7 @@ Phase 2: 下载/读取选中 skill 的完整内容，注入 system prompt
 Commands 解析：从 LLM 回复中提取 <commands> 块
 """
 
+import asyncio
 import json
 import os
 import re
@@ -63,7 +64,7 @@ async def select_relevant_skills(
         },
     ]
 
-    client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+    client = AsyncOpenAI(api_key=api_key, base_url=base_url, timeout=60.0)
 
     # ── Langfuse Generation Span ──
     langfuse_gen = None
@@ -229,8 +230,9 @@ async def load_skill_context(
         if skill.name not in skill_names:
             continue
 
-        skill_dir = _ensure_skill_extracted(skill, user_id)
-        skill_context = _read_skill_context(skill_dir)
+        # S3 下载 + 本地文件读取均为阻塞 I/O，放到线程池避免阻塞事件循环
+        skill_dir = await asyncio.to_thread(_ensure_skill_extracted, skill, user_id)
+        skill_context = await asyncio.to_thread(_read_skill_context, skill_dir)
         context_parts.append(f"## Skill: {skill.name}\n{skill_context}")
 
     return "\n\n---\n\n".join(context_parts)

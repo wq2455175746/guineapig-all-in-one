@@ -27,7 +27,11 @@ def _ensure_llm_client():
     if not settings.LLM_API_KEY:
         raise ValueError("LLM_API_KEY not set in .env")
 
-    _llm_client = OpenAI(api_key=settings.LLM_API_KEY, base_url=settings.LLM_BASE_URL)
+    _llm_client = OpenAI(
+        api_key=settings.LLM_API_KEY,
+        base_url=settings.LLM_BASE_URL,
+        timeout=120.0,
+    )
     _model_name = settings.LLM_MODEL_NAME
     logger.info(f"[LLM] 客户端就绪: model={_model_name}")
     return _llm_client, _model_name
@@ -123,7 +127,7 @@ async def get_llm_response_stream(
     Yields:
         逐 chunk 的文本内容
     """
-    client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+    client = AsyncOpenAI(api_key=api_key, base_url=base_url, timeout=120.0)
 
     logger.info(f"[LLM-Stream] 开始流式调用: model={model_name}, messages={len(messages)}")
 

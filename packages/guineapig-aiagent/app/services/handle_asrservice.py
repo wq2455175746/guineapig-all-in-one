@@ -33,6 +33,7 @@ def handle_asr(audio_path: str) -> str:
         resp = requests.post(
             settings.ASR_API_URL,
             files={"file": (os.path.basename(audio_path), f, "audio/mpeg")},
+            timeout=(5, 60),
         )
 
     if resp.status_code != 200:

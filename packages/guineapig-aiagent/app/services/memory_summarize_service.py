@@ -179,6 +179,7 @@ def process_memory_summarize(req: MemorySummarizeRequest):
         client = OpenAI(
             api_key=req.model_info.api_key,
             base_url=req.model_info.base_url,
+            timeout=120.0,
         )
 
         logger.info(f"[MemorySummarize] 调用 LLM: model={req.model_info.model_name}")

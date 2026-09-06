@@ -14,6 +14,7 @@ Agent 入口路由 — 完整意图识别 Pipeline (Phase 0-3) + DAG 生成 + SS
 6. [仅 stream] DAG 执行引擎 → SSE 事件流
 """
 
+import asyncio
 import json
 import uuid
 from datetime import datetime, timezone
@@ -21,7 +22,7 @@ from typing import AsyncGenerator
 
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
-from openai import OpenAI
+from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
 
 from app.config import settings
@@ -41,18 +42,20 @@ from app.agent.executor import DAGExecutionEngine
 from app.reporting.otel_metrics import report_chat_metrics
 from langfuse import observe
 
-# 惰性初始化的 LLM 客户端
-_llm_client: OpenAI | None = None
+# 惰性初始化的 LLM 客户端（async 流式调用，避免阻塞事件循环）
+_llm_client: AsyncOpenAI | None = None
 _llm_model: str = "deepseek-chat"
 
 
-def _get_llm_client() -> tuple[OpenAI, str]:
+def _get_llm_client() -> tuple[AsyncOpenAI, str]:
     global _llm_client, _llm_model
     if _llm_client is None:
         if not settings.LLM_API_KEY:
             raise ValueError("LLM_API_KEY not set")
-        _llm_client = OpenAI(
-            api_key=settings.LLM_API_KEY, base_url=settings.LLM_BASE_URL
+        _llm_client = AsyncOpenAI(
+            api_key=settings.LLM_API_KEY,
+            base_url=settings.LLM_BASE_URL,
+            timeout=120.0,
         )
         _llm_model = settings.LLM_MODEL_NAME
     return _llm_client, _llm_model
@@ -213,7 +216,9 @@ async def _run_intent_pipeline(
             f"complex={quick_result == QuickFilterResult.COMPLEX}, "
             f"candidates={len(candidates)}"
         )
-        deep_analysis = DeepAnalyzer.analyze(
+        # 同步 LLM 调用放入线程池，避免阻塞事件循环
+        deep_analysis = await asyncio.to_thread(
+            DeepAnalyzer.analyze,
             user_message=message,
             capability_inventory=inventory,
             conversation_history=request.conversation_history,
@@ -250,7 +255,9 @@ async def _run_intent_pipeline(
     # DAG 生成
     if decision.action == "proceed" and deep_analysis and deep_analysis.feasible:
         logger.info("[Agent] 触发 DAG 生成")
-        dag = DAGGenerator.generate(
+        # 同步 LLM 调用放入线程池，避免阻塞事件循环
+        dag = await asyncio.to_thread(
+            DAGGenerator.generate,
             deep_analysis=deep_analysis,
             capability_inventory=inventory,
             capabilities_formatted=capabilities_formatted,
@@ -383,7 +390,7 @@ async def _stream_execution_summary(
         )
 
     try:
-        stream = client.chat.completions.create(
+        stream = await client.chat.completions.create(
             model=model_name,
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -394,7 +401,7 @@ async def _stream_execution_summary(
             stream=True,
         )
 
-        for chunk in stream:
+        async for chunk in stream:
             if (
                 chunk.choices
                 and chunk.choices[0].delta
@@ -490,7 +497,7 @@ async def _direct_llm_stream(
         )
 
     try:
-        stream = client.chat.completions.create(
+        stream = await client.chat.completions.create(
             model=model_name,
             messages=[
                 {"role": "system", "content": system_prompt},
@@ -500,7 +507,7 @@ async def _direct_llm_stream(
             max_tokens=2048,
             stream=True,
         )
-        for chunk in stream:
+        async for chunk in stream:
             if (
                 chunk.choices
                 and chunk.choices[0].delta
@@ -705,7 +712,7 @@ async def agent_chat_stream(request: AgentChatRequest):
                         )
                     try:
                         client, model_name = _get_llm_client()
-                        stream = client.chat.completions.create(
+                        stream = await client.chat.completions.create(
                             model=model_name,
                             messages=[
                                 {
@@ -718,7 +725,7 @@ async def agent_chat_stream(request: AgentChatRequest):
                             max_tokens=512,
                             stream=True,
                         )
-                        for chunk in stream:
+                        async for chunk in stream:
                             if (
                                 chunk.choices
                                 and chunk.choices[0].delta
@@ -829,7 +836,7 @@ async def agent_chat_stream(request: AgentChatRequest):
                     try:
                         client, model_name = _get_llm_client()
                         llm_input_tokens = _estimate_tokens(message)
-                        stream = client.chat.completions.create(
+                        stream = await client.chat.completions.create(
                             model=model_name,
                             messages=[
                                 {"role": "system", "content": system_prompt},
@@ -839,7 +846,7 @@ async def agent_chat_stream(request: AgentChatRequest):
                             max_tokens=1024,
                             stream=True,
                         )
-                        for chunk in stream:
+                        async for chunk in stream:
                             if (
                                 chunk.choices
                                 and chunk.choices[0].delta
