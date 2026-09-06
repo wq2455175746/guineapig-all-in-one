@@ -112,7 +112,7 @@
               </Column>
               <Column field="createdAt" header="时间">
                 <template #body="{ data }">
-                  {{ formatTime2(data.createdAt) }}
+                  {{ formatTime(data.createdAt) }}
                 </template>
               </Column>
             </DataTable>

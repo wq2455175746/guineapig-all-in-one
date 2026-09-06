@@ -130,7 +130,7 @@ async function fetchUsers() {
     } else {
       users.value = []
       total.value = 0
-      showError(res.data?.message || '获取用户列表失败')
+      // 业务错误（code !== 0）由 axios 响应拦截器统一 toast，此处不再重复提示
     }
   } catch (e) {
     users.value = []
@@ -179,7 +179,7 @@ async function toggleDecryptUserInfo(userId, field, user) {
           fieldData.decryptedValue = decryptedValue
           fieldData.decrypted = true
         } else {
-          showError(res.data?.message || '解密失败')
+          // 业务错误（code !== 0）由 axios 响应拦截器统一 toast，此处不再重复提示
         }
       } catch (e) {
         showError('解密失败')
