@@ -371,32 +371,24 @@ class DAGExecutionEngine:
 
         # 对 MCP 步骤，从 context 注入连接信息（URL、transport_type、headers）
         if step.capability.startswith("mcp_"):
-            server_name = step.capability[4:]  # 去掉 "mcp_" 前缀
-            mcp_servers: list = self.context.get("mcp_servers", [])
-            for srv in mcp_servers:
-                srv_name = ""
-                if isinstance(srv, dict):
-                    srv_name = srv.get("server_name", "")
+            matched_srv = self._match_mcp_server(step.capability)
+            if matched_srv is not None:
+                if isinstance(matched_srv, dict):
+                    resolved_params.setdefault("mcp_url", matched_srv.get("mcp_url", ""))
+                    resolved_params.setdefault(
+                        "transport_type", matched_srv.get("transport_type", "")
+                    )
+                    resolved_params.setdefault("headers", matched_srv.get("headers", {}))
                 else:
-                    srv_name = getattr(srv, "server_name", "")
-                if srv_name == server_name:
-                    if isinstance(srv, dict):
-                        resolved_params.setdefault("mcp_url", srv.get("mcp_url", ""))
-                        resolved_params.setdefault(
-                            "transport_type", srv.get("transport_type", "")
-                        )
-                        resolved_params.setdefault("headers", srv.get("headers", {}))
-                    else:
-                        resolved_params.setdefault(
-                            "mcp_url", getattr(srv, "mcp_url", "")
-                        )
-                        resolved_params.setdefault(
-                            "transport_type", getattr(srv, "transport_type", "")
-                        )
-                        resolved_params.setdefault(
-                            "headers", getattr(srv, "headers", {})
-                        )
-                    break
+                    resolved_params.setdefault(
+                        "mcp_url", getattr(matched_srv, "mcp_url", "")
+                    )
+                    resolved_params.setdefault(
+                        "transport_type", getattr(matched_srv, "transport_type", "")
+                    )
+                    resolved_params.setdefault(
+                        "headers", getattr(matched_srv, "headers", {})
+                    )
 
         # 执行（带重试）
         result = None
@@ -561,6 +553,30 @@ class DAGExecutionEngine:
         return True
 
     # ── 数据流 ──
+
+    def _match_mcp_server(self, capability: str):
+        """将 MCP 步骤 capability 定位到对应的 MCP server。
+
+        LLM 生成的 capability 可能是 ``mcp_{server}``（如 ``mcp_amap``）或带工具后缀的
+        ``mcp_{server}_{tool}``（如 ``mcp_amap_maps_weather``）。这里按
+        ``mcp_{server_name}`` 前缀做最长前缀匹配，命中后由调用方注入 URL/transport/headers，
+        避免臆造的 tool 后缀导致 MCP URL 匹配失败。
+        """
+        mcp_servers: list = self.context.get("mcp_servers", [])
+        matched_srv = None
+        matched_len = -1
+        for srv in mcp_servers:
+            if isinstance(srv, dict):
+                srv_name = srv.get("server_name", "")
+            else:
+                srv_name = getattr(srv, "server_name", "")
+            if not srv_name:
+                continue
+            prefix = "mcp_" + srv_name
+            if capability.startswith(prefix) and len(prefix) > matched_len:
+                matched_srv = srv
+                matched_len = len(prefix)
+        return matched_srv
 
     def _resolve_params(self, params: dict) -> dict:
         """解析参数中的 {{step_id.output_key}} 引用"""

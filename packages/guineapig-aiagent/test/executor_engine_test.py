@@ -8,6 +8,7 @@ _execute_step 等核心方法（无需 LLM 调用）。
 import pytest
 
 from app.agent.models import (
+    CapabilityInventory,
     DAGDefinition,
     DAGStep,
     ExecutionLocation,
@@ -221,3 +222,116 @@ class TestStreamEvents:
         assert hasattr(event, "data")
         assert hasattr(event, "timestamp")
         assert isinstance(event.data, dict)
+
+
+class TestMatchMcpServer:
+    """MCP server 前缀匹配 — LLM 可能把 capability 写成 mcp_{server} 或 mcp_{server}_{tool}"""
+
+    def _make_engine(self):
+        return DAGExecutionEngine(
+            DAGDefinition(steps=[]),
+            context={
+                "mcp_servers": [
+                    {
+                        "server_name": "amap",
+                        "transport_type": "streamable_http",
+                        "mcp_url": "http://amap/mcp",
+                        "headers": {},
+                    },
+                    {
+                        "server_name": "github",
+                        "transport_type": "streamable_http",
+                        "mcp_url": "http://github/mcp",
+                        "headers": {},
+                    },
+                ],
+            },
+        )
+
+    def test_exact_server_name(self):
+        engine = self._make_engine()
+        srv = engine._match_mcp_server("mcp_amap")
+        assert srv["server_name"] == "amap"
+
+    def test_tool_suffix_matches_server(self):
+        """回归：mcp_amap_maps_weather 应归到 amap，而不是匹配失败导致 MCP URL 未提供"""
+        engine = self._make_engine()
+        srv = engine._match_mcp_server("mcp_amap_maps_weather")
+        assert srv is not None
+        assert srv["server_name"] == "amap"
+        assert srv["mcp_url"] == "http://amap/mcp"
+
+    def test_other_server_tool_suffix(self):
+        engine = self._make_engine()
+        srv = engine._match_mcp_server("mcp_github_issue")
+        assert srv["server_name"] == "github"
+
+    def test_unmatched_capability(self):
+        engine = self._make_engine()
+        assert engine._match_mcp_server("mcp_unknown_server") is None
+        assert engine._match_mcp_server("web_search") is None
+
+
+class TestCapabilityNormalization:
+    """DAG 能力名归一化 — LLM 臆造的能力名应归一到真实标识符"""
+
+    def _make_inventory(self):
+        from app.agent.models import (
+            CapabilityInfo,
+            CapabilityType,
+            ExecutionLocation,
+        )
+
+        return CapabilityInventory(capabilities=[
+            CapabilityInfo(
+                type=CapabilityType.MCP,
+                name="mcp_amap",
+                description="MCP [amap](streamable_http)",
+                execution_location=ExecutionLocation.SERVER,
+                tools=[{"name": "maps_weather", "description": "天气"}],
+            ),
+            CapabilityInfo(
+                type=CapabilityType.WEB_SEARCH,
+                name="web_search",
+                description="联网搜索",
+                execution_location=ExecutionLocation.SERVER,
+            ),
+        ])
+
+    def _normalized(self, guess):
+        from app.agent.models import CapabilityInventory
+
+        from app.agent.dag.validator import DAGValidator
+
+        inventory = self._make_inventory()
+        dag = DAGDefinition(steps=[DAGStep(step_id="s1", capability=guess, action="x")])
+        ok, _ = DAGValidator.validate(dag, inventory)
+        return ok, dag.steps[0].capability
+
+    def test_reversed_name_amap_mcp(self):
+        """回归：LLM 输出 amap_mcp 应归一到 mcp_amap 且 DAG 通过验证"""
+        ok, cap = self._normalized("amap_mcp")
+        assert ok
+        assert cap == "mcp_amap"
+
+    def test_tool_suffix_mcp_amap_maps_weather(self):
+        """回归：mcp_amap_maps_weather 应归一到 mcp_amap"""
+        ok, cap = self._normalized("mcp_amap_maps_weather")
+        assert ok
+        assert cap == "mcp_amap"
+
+    def test_exact_names_unchanged(self):
+        ok, cap = self._normalized("web_search")
+        assert ok
+        assert cap == "web_search"
+
+    def test_unknown_capability_still_fails(self):
+        from app.agent.models import CapabilityInventory
+
+        from app.agent.dag.validator import DAGValidator
+
+        inventory = self._make_inventory()
+        dag = DAGDefinition(steps=[DAGStep(step_id="s1", capability="totally_unknown", action="x")])
+        ok, errors = DAGValidator.validate(dag, inventory)
+        assert not ok
+        assert any("不在当前能力清单" in e for e in errors)

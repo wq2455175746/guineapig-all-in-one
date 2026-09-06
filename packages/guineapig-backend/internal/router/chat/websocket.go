@@ -25,7 +25,9 @@ var upgrader = websocket.Upgrader{
 		}
 		switch origin {
 		case "http://guineapig-client.local:5174",
-			"http://guineapig-ops-web.local:5173":
+			"http://guineapig-ops-web.local:5173",
+			"http://localhost:5174",
+			"http://localhost:5173":
 			return true
 		}
 		return false

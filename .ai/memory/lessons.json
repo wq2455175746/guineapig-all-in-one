@@ -278,6 +278,177 @@
       "context": "Dockerfile 使用 docker.io/library/golang:1.24-alpine 构建，部署到 docker.io/library/alpine:3.19 运行时环境",
       "action": "使用 CGO_ENABLED=0 GOOS=linux 静态编译，生成的二进制不依赖 glibc/musl，可以在任意 Linux 发行版运行。GOARCH=amd64 明确目标架构",
       "tags": ["go", "docker", "static-build", "cgo"]
+    },
+    {
+      "id": "L032",
+      "date": "2026-08-21",
+      "type": "security",
+      "title": "ZIP 解压必须做路径穿越（ZIP SLIP）防护",
+      "context": "skill 上传解压时未校验 zip 成员路径，恶意 zip 可写任意文件",
+      "action": "每个成员路径做 normpath+join 后校验 startswith(extract_dir+os.sep)，拒绝绝对路径与 .. 段，同时限制总大小（100MB）与条目数（1000）防 zip bomb",
+      "tags": ["security", "zip", "path-traversal"]
+    },
+    {
+      "id": "L033",
+      "date": "2026-08-21",
+      "type": "security",
+      "title": "S3 上传默认必须私有，访问走预签名 URL",
+      "context": "所有上传设 ACL=public-read，用户语音等隐私数据公开可下载",
+      "action": "上传一律不设公读 ACL，get_object_url 返回完整预签名 URL（含 X-Amz-Signature），绝不 split(\"?\") 剥签名",
+      "tags": ["security", "s3", "acl", "presigned-url"]
+    },
+    {
+      "id": "L034",
+      "date": "2026-08-21",
+      "type": "architecture",
+      "title": "跨服务调用必须携带共享 Token（X-Admin-Token / X-Inner-Token）",
+      "context": "aiagent 加了 fail-closed 鉴权后，backend→aiagent 的 9 个调用点全部 401，整个运行时链路断掉",
+      "action": "任一服务加鉴权后，必须同步检查所有调用方并接线共享 token；backend 用 AttachAiAgentAuth(req) 统一附加，docker-compose 共享同一 ADMIN_TOKEN 值；inner 回调用独立 INNER_TOKEN",
+      "tags": ["architecture", "auth", "integration", "token"]
+    },
+    {
+      "id": "L035",
+      "date": "2026-08-21",
+      "type": "security",
+      "title": "预签名下载 URL 端点必须校验对象属主（IDOR）",
+      "context": "presigned-download-url 接受任意 S3 key，由于已私有化，该端点成为唯一读取路径，任意登录用户可读他人对象",
+      "action": "从 key 解析 user_id 段（KeyOwnerUserID），要求与 CurrentUserID 匹配，admin/inner 放行。任何以 key/路径参数生成访问凭证的端点都要做属主校验",
+      "tags": ["security", "idor", "presigned-url", "s3"]
+    },
+    {
+      "id": "L036",
+      "date": "2026-08-21",
+      "type": "pattern",
+      "title": "async 路径中的同步阻塞调用必须 to_thread 或换 AsyncOpenAI",
+      "context": "DeepAnalyzer/DAGGenerator 的同步 OpenAI 调用直接跑在 async SSE 路由里，并发时冻结整个事件循环",
+      "action": "async 上下文用 asyncio.to_thread 包装同步 LLM 调用，或直接改 AsyncOpenAI；sync def 路由天然线程池不需包。所有 requests/OpenAI 调用必须显式 timeout",
+      "tags": ["python", "async", "performance", "event-loop"]
+    },
+    {
+      "id": "L037",
+      "date": "2026-08-21",
+      "type": "security",
+      "title": "WebSocket Send channel 永不 close，用 done channel + sync.Once 守护",
+      "context": "Register/Unregister 直接 close(client.Send)，后台 goroutine 持续发送导致 send on closed channel panic 崩溃整个进程",
+      "action": "Send 不 close；新增 done chan + sync.Once 的 Close()；sendToClient select done 丢弃；所有 spawned goroutine 加 recover()；Unregister 按连接实例而非仅 userID 清理（防重连竞态）",
+      "tags": ["go", "websocket", "concurrency", "panic"]
+    },
+    {
+      "id": "L038",
+      "date": "2026-08-21",
+      "type": "security",
+      "title": "鉴权身份必须从可验证 token 推导，绝不信任客户端可控 header",
+      "context": "backend 旧 auth 信任 X-User-Id header 且只查用户存在，任何人可伪造任意用户身份；WS token 也接受裸 user_id",
+      "action": "HMAC-SHA256 签名会话 token（base64url(payload).base64url(hmac)），常量时间比较 hmac.Equal；caller identity 仅从 token 推导；登录返回会话 token，客户端请求/WS 握手携带",
+      "tags": ["security", "auth", "hmac", "jwt"]
+    },
+    {
+      "id": "L039",
+      "date": "2026-08-21",
+      "type": "pattern",
+      "title": "Electron 中 AudioWorklet 模块用 data: URL 内联加载",
+      "context": "Electron 生产 loadFile 以 file:// 加载，addModule 内部 fetch file:// 被 CORS 拦截，blob: URL 也失败；data: URL 实测可行",
+      "action": "worklet 源码用 vite ?raw 导入并以 data: URL 传给 addModule，隔离在单一 getRecorderWorkletUrl() 函数内便于将来替换",
+      "tags": ["electron", "audioworklet", "vite"]
+    },
+    {
+      "id": "L040",
+      "date": "2026-08-21",
+      "type": "security",
+      "title": "Electron IPC 命令执行必须主进程边界白名单 + spawn(shell:false)",
+      "context": "execute-command IPC 把 renderer 传来的任意字符串 exec()，任何 XSS/恶意 backend 响应可执行任意 shell",
+      "action": "主进程强制命令二进制白名单（npx/npm/node/python/pip + skills 内已知二进制），参数过 SAFE_ARG_TOKEN 正则，spawn(shell:false) 阻断 shell 元字符，cwd 限定 userData/skills 下，risk 非 low 弹二次确认",
+      "tags": ["electron", "security", "ipc", "command-injection"]
+    },
+    {
+      "id": "L041",
+      "date": "2026-08-21",
+      "type": "pattern",
+      "title": "错误响应既要避免内部泄漏也要保留用户可读业务错误",
+      "context": "ResponseServerError 全改成通用\"系统错误\"后，IDOR 消息（无权操作该会话）、api_key 不存在等用户可读错误全被屏蔽",
+      "action": "引入 common.BizError(code,msg) 构造用户可见业务错误（errors.As 分支命中），真实内部错误（SQL/路径）才走通用错误+服务端日志+request_id 关联",
+      "tags": ["go", "api", "error-handling"]
+    },
+    {
+      "id": "L042",
+      "date": "2026-08-21",
+      "type": "pattern",
+      "title": "子代理执行大计划：每任务独立实现 + 独立审查 + fix loop",
+      "context": "14 个任务批次跨 4 个 package，单会话内用 subagent-driven development 执行",
+      "action": "每任务 dispatch 独立 implementer（带 brief 文件），完成后 dispatch task-reviewer 对 diff 做 spec+quality 审查，findings 进 fix loop（最多 5 轮，每轮 scoped re-review）；全部完成后 final whole-branch review 一次性补集成缺口",
+      "tags": ["process", "subagent", "review", "planning"]
+    },
+    {
+      "id": "L043",
+      "date": "2026-09-06",
+      "type": "bugfix",
+      "title": "CJS 库（adm-zip）打入 ESM Electron 主进程包导致 require 未定义崩溃",
+      "context": "client 主进程 bundle 是 ESM（package.json type:module），Task 7 引入 adm-zip（CJS 库）未列 external，rolldown 把其内部 require(\"fs\") 转成 __require(\"fs\")，ESM 作用域无 require，App 加载即抛 'Calling require for fs in an environment that doesn't expose the require function'",
+      "action": "把 adm-zip 加入 vite.config.ts 主进程 rollupOptions.external（与 archiver/node-machine-id/@modelcontextprotocol/sdk 同模式），由 Electron 运行时以真实 CJS 加载；修复后 dist/electron/index.js 中 __require(\"fs\") 为 0 次，应用正常启动",
+      "tags": ["electron", "esm", "cjs", "bundling", "external"]
+    },
+    {
+      "id": "L044",
+      "date": "2026-09-06",
+      "type": "bugfix",
+      "title": "CORS 预检失败：origin 为 localhost 而白名单只配了 .local 域名",
+      "context": "client dev server 实际跑在 http://localhost:5174（vite 5173 被 ops-web 占用自动顺延），但 backend config.yaml corsHosts 只允许 http://guineapig-client.local:5174，预检响应无 Access-Control-Allow-Origin → fetch ERR_FAILED",
+      "action": "config.yaml corsHosts 追加 http://localhost:5173 与 http://localhost:5174，覆盖两种 dev 访问方式；改动后端配置需重启服务生效",
+      "tags": ["cors", "dev", "config", "localhost"]
+    },
+    {
+      "id": "L045",
+      "date": "2026-09-06",
+      "type": "bugfix",
+      "title": "aiagent fail-closed 鉴权导致 backend→aiagent 全链路 401",
+      "context": "client 对话报 'aiagent 返回错误: 401, Unauthorized 无效或缺失的访问令牌'；backend AttachAiAgentAuth 附加 X-Admin-Token，但 aiagent 本地 .env 漏配 ADMIN_TOKEN（默认空），鉴权中间件 fail-closed 拒绝所有非白名单接口",
+      "action": "aiagent .env 补 ADMIN_TOKEN=guineapig-admin-dev-token（与 backend .env 同值）；Task 6 给 aiagent 加鉴权后，必须同步在各环境 .env 配置 ADMIN_TOKEN，否则服务间调用全部 401",
+      "tags": ["aiagent", "auth", "401", "env", "fail-closed"]
+    },
+    {
+      "id": "L046",
+      "date": "2026-09-06",
+      "type": "bugfix",
+      "title": "LLM 臆造 DAG capability 名导致 MCP 工具无法执行",
+      "context": "使用 amap MCP 规划旅行报 'MCP server URL 未提供' 或 '能力 amap_mcp 不在当前能力清单中'；LLM 只能看到能力描述 'MCP [amap]' 而看不到确切标识符 mcp_amap，于是猜出 amap_mcp / mcp_amap_maps_weather 等变体，engine 精确匹配与 validator 校验均失败",
+      "action": "三层根治：①format_for_llm 展示确切标识符 `mcp_amap`；②DAG 生成 prompt 明确要求 capability 原样使用反引号标识符；③validator 新增 _normalize_capabilities 按 token 重叠把臆造名（amap_mcp/mcp_amap_maps_weather）归一到真实 mcp_amap 并改写 step.capability；engine 前缀匹配留作兜底。修复后 139 测试通过",
+      "tags": ["aiagent", "llm", "mcp", "dag", "normalization"]
+    },
+    {
+      "id": "L047",
+      "date": "2026-09-06",
+      "type": "bugfix",
+      "title": "WebSocket 握手 403：gorilla CheckOrigin 白名单缺 localhost",
+      "context": "client WS 连接 ws://localhost:6880/api/v1/chat/ws?token=... 失败 Unexpected response code: 403；WS 路由跳过 Auth 中间件、token 在 handler 校验，但 gorilla upgrader 的 CheckOrigin 只允许 .local 域名，localhost:5174 origin 被拒返回 403",
+      "action": "websocket.go CheckOrigin 追加 http://localhost:5174 与 http://localhost:5173（与 CORS 白名单一致）；后端任意 Origin 白名单（CORS/CheckOrigin）都要同时覆盖 .local 与 localhost 两种 dev 访问方式",
+      "tags": ["websocket", "gorilla", "checkorigin", "403", "localhost"]
+    },
+    {
+      "id": "L048",
+      "date": "2026-09-07",
+      "type": "bugfix",
+      "title": "LLM 输出缺 </commands> 闭合标签导致命令确认框不弹出",
+      "context": "client 收到命令后 '<commands> [...]' 以纯文本显示且不弹确认框；LLM 输出 <commands> 块时漏掉 </commands> 闭合标签（实测 '<commands> [{\"type\":\"shell\",...}]' 结尾是 ] 无闭合），原正则强制要求闭合，parse_commands 匹配失败 → 命令留在文本、done 事件不带 commands、客户端不弹窗",
+      "action": "把 parse_commands 从正则改为平衡括号扫描 [ ... ] 提取命令块，不再依赖 </commands> 是否存在，同时正确处理字符串内 [ ] 与嵌套数组；新增 test/skill_commands_test.py 7 个回归测试（闭合/不闭合/嵌套数组/大小写/非法 JSON/字段过滤）",
+      "tags": ["aiagent", "commands", "parse", "llm", "brace-balancing"]
+    },
+    {
+      "id": "L049",
+      "date": "2026-09-07",
+      "type": "bugfix",
+      "title": "命令确认框循环弹出：LLM 反复生成相同 <commands>",
+      "context": "修复 L048 后确认框能弹出，但点击确认后反复弹出（日志显示 conv_id=83 连续 4 次流式请求，messages 2→3→4→5）；handleCommandResult 把命令执行结果注入 system prompt 并允许'生成新命令继续执行'，LLM 对一次性任务（打开浏览器/日历）也持续输出命令 → 循环",
+      "action": "三层根治：①后端 MaxCommandRounds=3 + Redis 计数器 chat:cmd_rounds 限制轮次，达上限丢弃 commands；②injectCommandResultsIntoMessages 强化 prompt（任务完成即总结、标明当前第 N 轮/最多 3 轮）；③客户端记录最近执行命令签名，相同命令不再弹窗（shouldShowCommandDialog）。用户发新消息时 resetCommandRounds 清零",
+      "tags": ["backend", "client", "commands", "loop", "redis", "round-limit"]
+    },
+    {
+      "id": "L050",
+      "date": "2026-09-07",
+      "type": "bugfix",
+      "title": "LLM 臆造 DAG capability 名的根治链（补充）",
+      "context": "L046 记录了 MCP capability 名臆造的修复；本次补充关键认知：validator._normalize_capabilities 用 token 重叠归一化（amap_mcp→mcp_amap），LLM 输出天然不稳定，凡非确定性输出参与路由/匹配必须有归一化兜底",
+      "action": "已落库 L046（三层根治）+ AP-029（LLM 输出当精确键匹配的教训）；本次命令解析同理——LLM 输出格式（标签闭合、命名）都必须容错处理",
+      "tags": ["aiagent", "llm", "normalization", "consolidation"]
     }
   ]
 }

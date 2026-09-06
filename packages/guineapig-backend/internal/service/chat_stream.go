@@ -21,11 +21,16 @@ const (
 	RedisKeyContext         = "chat:context:%d:%d"  // chat:context:{user_id}:{conversation_id}
 	RedisKeyLastActive      = "chat:last_active:%d" // chat:last_active:{user_id}
 	RedisKeyPendingMessages = "chat:pending_messages"
+	RedisKeyCommandRounds   = "chat:cmd_rounds:%d:%d" // chat:cmd_rounds:{user_id}:{conversation_id}
 
-	StreamCacheTTL  = 3600 * time.Second
-	ContextCacheTTL = 7200 * time.Second
-	LastActiveTTL   = 86400 * time.Second
+	StreamCacheTTL   = 3600 * time.Second
+	ContextCacheTTL  = 7200 * time.Second
+	LastActiveTTL    = 86400 * time.Second
+	CommandRoundsTTL = 3600 * time.Second
 )
+
+// MaxCommandRounds 单次对话允许的命令执行轮次上限，防止 LLM 循环生成命令导致确认框反复弹出。
+const MaxCommandRounds = 3
 
 // ========== 模型配置 ==========
 

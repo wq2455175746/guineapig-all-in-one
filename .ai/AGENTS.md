@@ -39,6 +39,11 @@ make validate
 | `app/agent/models.py` | Agent 数据模型 | IntentDecisionResult, StreamEvent, DAGDefinition 等 |
 | `app/reporting/otel_metrics.py` | OTel 指标上报（Redis HINCRBY） | `report_chat_metrics()` |
 | `app/services/otel_service.py` | OTel 指标写入 Redis | `report_metrics()` |
+| `app/core/llm_clients.py` | LLM 客户端复用 + 有界重试 | `get_llm_client()`, `call_with_retry()` |
+| `app/core/milvus_clients.py` | Milvus 客户端线程本地缓存 | `thread-local MilvusClient` |
+| `app/services/zip_utils.py` | ZIP 安全解压（防 ZIP SLIP / zip bomb） | `extract_zip_safe()`, `safe_zip_target()` |
+| `app/services/prompt_context.py` | 提示注入缓解（context 分隔 + 转义） | `wrap_context()` |
+| `app/middleware.py` | 鉴权（X-Admin-Token）+ request_id 日志 | `AdminTokenAuthMiddleware`, `RequestIDMiddleware` |
 
 ## Backend 内部模块路由
 
@@ -54,6 +59,10 @@ make validate
 | `internal/router/bot/` | Bot 管理 API（list/update/delete） |
 | `pkg/tasks/` | Asynq 任务类型定义 + Handler 注册 |
 | `pkg/plugin/` | DB/Redis/Asynq Server/Scheduler 初始化 |
+| `pkg/auth/` | HMAC 会话 Token（签发/验签，常量时间比较） | `IssueUserToken`, `ParseUserToken` |
+| `pkg/middleware/auth.go` | 三套鉴权：`X-User-Token`/`X-Admin-Token`/`X-Inner-Token` | `CurrentUserID`, `IsAdminSession`, `BindRequester` |
+| `pkg/utils/httpclient.go` | 共享 HTTP client 连接池 + aiagent 调用附加鉴权 | `NewHTTPClient()`, `AttachAiAgentAuth()` |
+| `pkg/utils/s3key.go` | S3 key 属主解析（预签名下载 IDOR 校验） | `KeyOwnerUserID()` |
 
 ## Architecture Constraints
 

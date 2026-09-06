@@ -1,0 +1,33 @@
+{
+  "task_id": "full-project-optimization",
+  "task_name": "全项目优化：安全修复 + 性能提升 + 可维护性",
+  "status": "completed",
+  "completed_at": "2026-09-06T22:00:00",
+  "commits": "516e37e..9340038",
+  "summary": "14 任务批次 + 最终整体审查。aiagent P0-P2 (6 任务)、client P0-P1 (2)、ops-web P0-P2 (3)、backend P0-P2 (3)。每任务子代理实现+独立审查，fix loop 处理 findings，最终补 6 项集成缺口。",
+  "packages": {
+    "guineapig-aiagent": "zip-slip/ACL/预签名/鉴权/超时/事件循环/RAG/客户端复用/agent.py重构/死代码/依赖/request_id日志",
+    "guineapig-client": "webSecurity/IPC白名单/unzip→adm-zip/文件读/openExternal/登录RSA/AudioWorklet/WS鉴权",
+    "guineapig-ops-web": "注册页/admin token/ECharts泄漏/loadUsers缓存/CRUD composable/路由守卫/拦截器/按需ECharts",
+    "guineapig-backend": "HMAC鉴权/IDOR/inner token/SSRF/WS防崩/死锁/上下文/N+1/索引/连接池/背压/message_count/日志"
+  },
+  "deferred": [
+    "部署配置 JWT_SECRET/INNER_TOKEN/ADMIN_TOKEN/AIMODEL_ALLOWED_HOSTS/REGISTER_CODE",
+    "/api/v1/users 挪到 admin 路由",
+    "pycryptodome/crypto-js/vue-echarts 依赖清理",
+    "chat_memory.go localhost:8000 硬编码",
+    "MD5 旧 api_key 滚动升级"
+  ],
+  "followup_fixes_20260906": {
+    "adm_zip_esm": "adm-zip 加入 vite.config.ts 主进程 external，修复 ESM __require(fs) 加载崩溃",
+    "cors_localhost": "config.yaml corsHosts 追加 localhost:5173/5174，修复 client 登录 CORS 预检失败",
+    "aiagent_admin_token_env": "aiagent .env 补 ADMIN_TOKEN 修复 backend→aiagent 401",
+    "mcp_capability_normalization": "validator 归一化 LLM 臆造 capability 名 + prompt 展示确切标识符",
+    "ws_checkorigin_localhost": "websocket.go CheckOrigin 追加 localhost origin 修复 WS 403"
+  },
+  "followup_fixes_20260907": {
+    "command_block_parse_robust": "parse_commands 改平衡括号扫描容忍缺 </commands> 闭合标签",
+    "command_dialog_loop": "三层根治命令确认框循环: Redis 轮次上限3+prompt强化+客户端签名去重",
+    "mcp_capability_normalization": "validator token 重叠归一化(amap_mcp→mcp_amap) 已落库 L046"
+  }
+}

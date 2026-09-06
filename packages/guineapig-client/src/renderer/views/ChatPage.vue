@@ -177,6 +177,19 @@ const hasHighRiskCommands = computed(() =>
   pendingCommands.value.some(c => c.risk === 'high')
 )
 
+// 最近一次已执行并回传结果的命令签名（防循环弹窗：LLM 对同一命令反复生成时不再弹框）
+let lastExecutedCommandsSig = ''
+
+function commandsSignature(cmds: CommandItem[]): string {
+  return JSON.stringify(cmds.map((c) => ({ type: c.type, command: c.command, cwd: c.cwd || '' })))
+}
+
+function shouldShowCommandDialog(cmds: CommandItem[]): boolean {
+  if (!cmds || cmds.length === 0) return false
+  if (commandsSignature(cmds) === lastExecutedCommandsSig) return false
+  return true
+}
+
 // ========== WebSocket 连接管理 ==========
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:6880'
 
@@ -322,7 +335,7 @@ function handleWSMessage(env: any) {
 
     case 'chat.command': {
       const commands = env.payload?.commands || []
-      if (commands.length > 0) {
+      if (shouldShowCommandDialog(commands)) {
         pendingCommands.value = commands
         commandResults.value = []
         showCommandDialog.value = true
@@ -351,7 +364,7 @@ function handleWSMessage(env: any) {
         if (env.payload?.full_content) {
           target.content = env.payload.full_content
         }
-        if (env.payload?.commands && env.payload.commands.length > 0 && !showCommandDialog.value) {
+        if (env.payload?.commands && env.payload.commands.length > 0 && !showCommandDialog.value && shouldShowCommandDialog(env.payload.commands)) {
           pendingCommands.value = env.payload.commands
           commandResults.value = []
           showCommandDialog.value = true
@@ -778,6 +791,8 @@ async function executeCommands() {
 
   isExecutingCommands.value = false
   showCommandDialog.value = false
+  // 记录已执行命令签名，后端若把同一命令结果回传触发 LLM 再次生成相同命令时不再弹窗
+  lastExecutedCommandsSig = commandsSignature(pendingCommands.value)
 
   const results = commandResults.value.map((cr) => ({
     index: commandResults.value.indexOf(cr),

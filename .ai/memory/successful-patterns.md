@@ -426,3 +426,110 @@ e.Use(authMiddleware)  // Auth 之后的所有路由需要鉴权
 - 返回 JSON `{"status":"ok","time":<unix_timestamp>}`
 - `prometheus.io/scrape` 注解指向 `/api/v1/health`（通过 service annotation 配置）
 - **适用**：所有需要容器编排（K8s/Docker Compose）的 Go 服务
+## SP-029: HMAC 会话 Token 鉴权模式
+```go
+// pkg/auth/token.go
+// 格式: base64url(userID:expiryUnix).base64url(hmac-sha256(secret, payload))
+token, _ := IssueUserToken(secret, userID, ttl)
+userID, err := ParseUserToken(secret, token)  // 常量时间比较 + 过期校验
+```
+- 身份仅从 token 推导，绝不信任客户端可控 header
+- 三套共享密钥分权：`/api/v1/*` 用 `X-User-Token`（会话）、`/admin/api/v1/*` 用 `X-Admin-Token`（共享）、`/inner/api/v1/*` 用 `X-Inner-Token`（服务间）
+- 客户端可控的 user_id 一律由中间件以 token 身份覆盖（BindRequester/CurrentUserID）
+- **适用**：backend 所有需鉴权路由 + WS 握手（?token= 验签）
+
+## SP-030: ZIP 安全解压工具模式（zip_utils.extract_zip_safe）
+```python
+def extract_zip_safe(zf, extract_dir, max_total_size=100MB, max_file_count=1000):
+    # 1. 剥离公共顶层目录
+    # 2. 校验原始条目名 + 剥离后路径（拒绝 .. 绝对路径 反斜杠）
+    # 3. 流式写入并统计实际字节（防压缩炸弹）
+    # 4. 超限抛 UnsafeZipError
+```
+- 双重校验：原始条目名 + normpath 后前缀校验（防 prefix-mismatch 如 /x/out_evil）
+- 共享给多个解压入口，错误类型子类化 RuntimeError 保持调用方 except 契约
+- **适用**：skill/zip 上传解压等所有不可信 zip 处理
+
+## SP-031: 子代理驱动开发（subagent-driven development）
+```
+每任务: dispatch implementer(带 brief 文件) → implementer 实现+测试+提交
+      → dispatch task-reviewer(读 diff 包) → spec+quality 双判
+      → fix loop: 最多5轮，每轮 resume implementer + scoped re-review
+全部完成后: final whole-branch review → 一次 fix wave 补集成缺口
+```
+- 每个 implementer 用独立 brief 文件（task-N-brief.md）作需求唯一来源，不污染上下文
+- 审查 diff 用 review-package 脚本生成单文件（commit list + stat + 全文 diff）
+- 最终整体审查专门抓跨任务集成缺口（服务间 token、跨包契约、部署接线）
+- **适用**：任何多任务大计划的执行
+
+## SP-032: LLM 客户端复用 + 有界重试模式
+```python
+# app/core/llm_clients.py
+get_llm_client() / get_async_llm_client()  # 锁保护的进程内缓存, keyed by (sync, api_key, base_url, timeout)
+call_with_retry(fn, *args)                 # 有界重试 + 指数退避
+# 不重试的确定性错误: AuthenticationError/PermissionDeniedError/BadRequestError/NotFoundError
+```
+- 每调用新建 OpenAI client 浪费连接池；缓存后复用
+- 流式调用只重试 create，不重放已消费 chunk
+- 同步重试的 time.sleep 只在线程上下文（to_thread/线程池）执行，不阻塞事件循环
+- **适用**：所有 LLM 调用点
+
+## SP-033: Milvus 客户端线程本地缓存模式
+```python
+# app/core/milvus_clients.py
+threading.local()  # 每个线程独立缓存 MilvusClient, keyed by (host, port, db_name)
+```
+- MilvusClient 非线程安全，per-thread 缓存安全 by construction 且避免连接抖动
+- 多 collection 搜索用 asyncio.gather + to_thread 并发，每个 worker 线程持有自己的 client
+- **适用**：RAG 检索/写入等线程池调用的场景
+
+## SP-034: WS 连接生命周期上下文模式
+```go
+func newClientStreamContext(client *ClientConnection) context.Context
+// 连接关闭(done)时自动取消 → 流式 goroutine 随之退出, 不泄漏
+```
+- 所有 spawned goroutine（streamAssistantReply/handleCommandResult/handleAgentSend）都从连接生命周期 context 派生
+- cancel() 始终 defer，watch goroutine 经 ctx.Done() 退出
+- 终态 DB 写用独立的 30s writeCtx，不被 WS 断连取消（避免消息卡在 streaming）
+- **适用**：WS 连接相关的所有后台任务
+
+## SP-035: Electron AudioWorklet data: URL 加载模式
+```typescript
+// src/audio/recorder-worklet.js (原始源码, vite ?raw 导入)
+import workletSrc from '../audio/recorder-worklet.js?raw'
+const url = 'data:text/javascript;base64,' + btoa(workletSrc)  // 隔离在 getRecorderWorkletUrl()
+await ctx.audioWorklet.addModule(url)
+```
+- 生产 file:// 下 blob: 和 file: 均被 CORS 拦截，data: URL 实测唯一可用
+- worklet 拷贝后 transfer（不持有引擎 buffer），keepalive return true，无输入通道不 post
+- **适用**：Electron 中所有 AudioWorklet 场景
+
+## SP-036: 共享 HTTP client 连接池模式
+```go
+// pkg/utils/httpclient.go
+var sharedHTTPTransport = &http.Transport{MaxIdleConns: 100, MaxIdleConnsPerHost: 10, ...}
+func NewHTTPClient(timeout time.Duration) *http.Client
+```
+- 消除 10+ 处 `&http.Client{}` 每调用新建（丢失连接池/DNS 缓存）
+- 保持 per-call timeout，流式请求用大 timeout
+- **适用**：backend 所有出站 HTTP（chat/agent/skill/file/aimodel）
+
+## SP-037: N+1 批量查询模式（WHERE id IN）
+```go
+// model/res_files.go
+func (*ResFiles) FindByIds(ctx, ids []uint) ([]ResFile, error) {
+    return db.Where("id IN ? AND deleted_at IS NULL", ids).Find(&items).Error
+}
+```
+- 替代逐条 FindById 循环（chat_stream.resolveRagContext 每轮 N+1）
+- 缺失/已删行正确排除（deleted_at IS NULL）
+- List 方法 PageSize=0 时硬上限 MaxListLimit(1000)
+- **适用**：所有逐条主键查询可批量化的场景
+
+## SP-038: 对 LLM 非确定性输出做三层容错（标识符/格式/循环）
+**做法**：凡是 LLM 输出参与路由或执行的内容（capability 名、commands 块），一律假设输出不可靠，做三层防护：
+1. **prompt 展示确切标识符并强制原样使用**（capability 名 `mcp_amap`、`<commands>` 格式样例）
+2. **消费端容错解析/归一化**（validator token 重叠归一化 `amap_mcp→mcp_amap`；parse_commands 平衡括号扫描容忍缺闭合标签）
+3. **硬性兜底**（命令轮次 Redis 上限+客户端相同命令签名去重）
+**效果**：MCP 旅行规划、命令执行两个此前"时好时坏"的功能稳定可用；LLM 行为波动不再导致功能失效
+**适用**：所有依赖 LLM 输出但必须可靠执行的功能

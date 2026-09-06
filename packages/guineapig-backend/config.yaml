@@ -19,7 +19,7 @@ admin:
   token: ${ADMIN_TOKEN}
 
 # CORS 允许的前端域名白名单（逗号分隔）
-corsHosts: "http://guineapig-ops-web.local:5173,http://guineapig-client.local:5174"
+corsHosts: "http://guineapig-ops-web.local:5173,http://guineapig-client.local:5174,http://localhost:5173,http://localhost:5174"
 # CORS 允许的自定义请求头白名单（逗号分隔），与内置标准头合并
 corsHeaders: "X-Device-Id,X-User-Id,X-User-Token,X-Request-Id,X-Admin-Token,X-Inner-Token"
 

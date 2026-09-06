@@ -42,8 +42,8 @@ var (
 
 type Hub struct {
 	mu           sync.RWMutex
-	clients      map[int64]*ClientConnection   // user_id → WS 连接
-	aiAgentConns map[int64]*AiAgentConn        // conversation_id → aiagent HTTP 连接
+	clients      map[int64]*ClientConnection // user_id → WS 连接
+	aiAgentConns map[int64]*AiAgentConn      // conversation_id → aiagent HTTP 连接
 }
 
 type ClientConnection struct {
@@ -296,6 +296,9 @@ func (h *Hub) handleChatSend(client *ClientConnection, env *response.WSEnvelope)
 		logger.Warnf("[Hub] 保存用户聊天配置失败: user_id=%d, err=%v", client.UserID, err)
 	}
 
+	// 4.1 新用户消息 → 清零该会话的命令轮次计数，允许新一轮命令执行
+	resetCommandRounds(ctx, client.UserID, msgResp.ConversationId)
+
 	// 5. 异步流式回复
 	go h.streamAssistantReply(ctx, client, req, msgResp)
 }
@@ -445,9 +448,9 @@ func (h *Hub) streamAssistantReply(ctx context.Context, client *ClientConnection
 			donePayload["commands"] = commands
 		}
 		h.sendToClient(client, &response.WSEnvelope{
-			Type: "chat.done",
-			From: "backend",
-			To:   "client",
+			Type:    "chat.done",
+			From:    "backend",
+			To:      "client",
 			Payload: donePayload,
 			Meta: &response.WSMeta{
 				ConversationID: convID,
@@ -555,9 +558,9 @@ func (h *Hub) proxyAiAgentStream(
 		data := strings.TrimPrefix(line, "data: ")
 
 		var event struct {
-			Content  string                `json:"content,omitempty"`
-			Done     bool                  `json:"done,omitempty"`
-			Error    string                `json:"error,omitempty"`
+			Content  string                 `json:"content,omitempty"`
+			Done     bool                   `json:"done,omitempty"`
+			Error    string                 `json:"error,omitempty"`
 			Commands []response.CommandItem `json:"commands,omitempty"`
 		}
 		if err := json.Unmarshal([]byte(data), &event); err != nil {
@@ -692,7 +695,8 @@ func (h *Hub) handleCommandResult(client *ClientConnection, env *response.WSEnve
 	}
 
 	// 6. 注入命令执行结果到 system message
-	llmMessages = injectCommandResultsIntoMessages(llmMessages, resultsRaw)
+	round, _ := nextCommandRound(aiCtx, client.UserID, convID)
+	llmMessages = injectCommandResultsIntoMessages(llmMessages, resultsRaw, round, MaxCommandRounds)
 
 	// 7. 加载模型配置
 	modelConfig, err := loadModelConfig(aiCtx, conversation.ModelId, client.UserID)
@@ -722,6 +726,12 @@ func (h *Hub) handleCommandResult(client *ClientConnection, env *response.WSEnve
 
 	// 9. 调用 aiagent SSE 流
 	fullContent, commands, proxyErr := h.proxyAiAgentStream(aiCtx, convID, assistantMsgID, llmMessages, modelConfig, skills, client.UserID, false, ragContext, client)
+
+	// 9.1 命令轮次已达上限：丢弃本轮生成的 commands，避免确认框反复弹出
+	if len(commands) > 0 && round >= MaxCommandRounds {
+		logger.Infof("[Hub] 命令执行轮次已达上限 (%d)，丢弃本轮 commands: user_id=%d, conversation_id=%d", MaxCommandRounds, client.UserID, convID)
+		commands = nil
+	}
 
 	// 10. 处理结果
 	if proxyErr != nil {
@@ -763,9 +773,9 @@ func (h *Hub) handleCommandResult(client *ClientConnection, env *response.WSEnve
 			donePayload["commands"] = commands
 		}
 		h.sendToClient(client, &response.WSEnvelope{
-			Type: "chat.done",
-			From: "backend",
-			To:   "client",
+			Type:    "chat.done",
+			From:    "backend",
+			To:      "client",
 			Payload: donePayload,
 			Meta: &response.WSMeta{
 				ConversationID: convID,
@@ -890,7 +900,7 @@ func parseSendRequest(payload map[string]any) (*request.ChatSendRequest, error) 
 }
 
 // injectCommandResultsIntoMessages 将命令执行结果注入到 messages 的 system prompt 中
-func injectCommandResultsIntoMessages(messages []map[string]string, resultsRaw any) []map[string]string {
+func injectCommandResultsIntoMessages(messages []map[string]string, resultsRaw any, round, maxRounds int64) []map[string]string {
 	resultsBlock := "\n\n## 命令执行结果\n"
 
 	resultsList, ok := resultsRaw.([]any)
@@ -915,9 +925,9 @@ func injectCommandResultsIntoMessages(messages []map[string]string, resultsRaw a
 	}
 
 	resultsBlock += "\n以上是命令执行结果。" +
-		"请根据结果判断：如果任务已完成，直接给用户生成最终回复总结完成的内容；" +
-		"如果还需要更多步骤（如继续写入文件、读取状态等），可以生成新命令继续执行。" +
-		"注意：不要重复执行已经成功的命令。\n"
+		"请根据结果判断：如果任务已完成或命令已成功执行，直接给用户生成最终回复总结完成的内容，不要生成新命令。" +
+		"只有当任务确实还需要后续步骤（如继续写入文件、读取状态等）且本对话命令轮次未用尽时才可生成新命令继续执行。" +
+		fmt.Sprintf("当前为第 %d 轮命令，本轮最多 %d 轮，用完即止，不要重复执行已经成功的命令。\n", round, maxRounds)
 
 	// 注入到已有的 system message
 	for _, msg := range messages {
@@ -934,3 +944,26 @@ func injectCommandResultsIntoMessages(messages []map[string]string, resultsRaw a
 	return result
 }
 
+// nextCommandRound 返回本次命令执行轮次（从 1 开始），并在 Redis 中持久化计数。
+// 返回 round > MaxCommandRounds 时表示已达上限，应停止继续生成命令。
+func nextCommandRound(ctx context.Context, userID, convID int64) (int64, error) {
+	rdb := plugin.GetClient()
+	key := fmt.Sprintf(RedisKeyCommandRounds, userID, convID)
+	round, err := rdb.Incr(ctx, key).Result()
+	if err != nil {
+		return 0, err
+	}
+	if err := rdb.Expire(ctx, key, CommandRoundsTTL).Err(); err != nil {
+		logger.Warnf("[Hub] 设置命令轮次过期失败: user_id=%d, conversation_id=%d, err=%v", userID, convID, err)
+	}
+	return round, nil
+}
+
+// resetCommandRounds 在用户新发一条聊天消息（非命令执行结果）时清零命令轮次。
+func resetCommandRounds(ctx context.Context, userID, convID int64) {
+	rdb := plugin.GetClient()
+	key := fmt.Sprintf(RedisKeyCommandRounds, userID, convID)
+	if err := rdb.Del(ctx, key).Err(); err != nil {
+		logger.Warnf("[Hub] 清零命令轮次失败: user_id=%d, conversation_id=%d, err=%v", userID, convID, err)
+	}
+}

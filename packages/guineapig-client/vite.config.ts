@@ -20,7 +20,7 @@ export default defineConfig({
           build: {
             outDir: 'dist/electron', // 输出到 dist-electron 目录
             rollupOptions: {
-              external: ['electron', 'node-machine-id', 'archiver', '@modelcontextprotocol/sdk'],
+              external: ['electron', 'node-machine-id', 'archiver', 'adm-zip', '@modelcontextprotocol/sdk'],
               output: {
                 entryFileNames: 'index.js' // 输出文件名
               }

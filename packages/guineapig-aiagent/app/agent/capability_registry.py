@@ -279,7 +279,8 @@ class CapabilityRegistry:
                         tool_descs.append(str(t))
                 tools_part = "\n    Tools: " + "\n    \u2022 ".join(tool_descs)
             loc_mark = "\U0001f5b0\ufe0f" if cap.execution_location == ExecutionLocation.SERVER else "\U0001f4bb"
-            lines.append(f"- {loc_mark} {cap.description}{tools_part}")
+            # 展示确切能力标识符，DAG 生成时 capability 字段必须原样使用它
+            lines.append(f"- {loc_mark} `{cap.name}` — {cap.description}{tools_part}")
 
         if len(lines) == 1:
             lines.append("  (当前无可用能力)")

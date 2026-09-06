@@ -71,3 +71,4 @@ packages/guineapig-client/release/    # 客户端安装包
 *.sqlite
 /packages/guineapig-aiagent/.venv/
 /packages/guineapig-aiagent/data/
+/packages/guineapig-backend/bin/

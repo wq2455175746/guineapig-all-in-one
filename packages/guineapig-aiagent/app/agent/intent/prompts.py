@@ -101,6 +101,10 @@ DAG_GENERATOR_SYSTEM = """你是一个 AI Agent 任务规划引擎。你的职�
 - `tool`: 要调用的 MCP 工具名称（从能力描述中查看可用工具名）
 - `arguments`: 传递给工具的参数对象，根据工具的参数签名填写（参数名、类型、必填信息见能力描述中的 tool signatures）
 注意: 不要包含 mcp_url / transport_type / headers — 这些由系统自动注入。
+
+## capability 字段取值
+capability **必须**使用「可用能力」清单中以反引号标注的确切标识符（如 `` `mcp_amap` ``、`` `web_search` ``），
+不要自行拼接或改写标识符（禁止 `amap_mcp`、`mcp_amap_maps_weather` 之类的变体）。
 """
 
 DAG_GENERATOR_HUMAN_TEMPLATE = """## 可用能力

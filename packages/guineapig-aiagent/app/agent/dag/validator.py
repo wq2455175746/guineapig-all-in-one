@@ -10,7 +10,7 @@ DAG 验证器 — 确保生成的 DAG 是可执行、无循环、能力可用的
 """
 
 from app.core.log import logger
-from ..models import CapabilityInventory, DAGDefinition
+from ..models import CapabilityInventory, DAGDefinition, DAGStep
 
 
 class DAGValidator:
@@ -43,11 +43,61 @@ class DAGValidator:
         cls._check_cycle(dag, errors)
 
         if inventory:
+            cls._normalize_capabilities(dag, inventory)
             cls._check_capability_availability(dag, inventory, errors)
 
         if errors:
             return False, errors
         return True, []
+
+    @classmethod
+    def _normalize_capabilities(
+        cls, dag: DAGDefinition, inventory: CapabilityInventory
+    ) -> None:
+        """将 LLM 可能臆造的能力名归一到真实能力标识符。
+
+        LLM 生成 DAG 时只能看到能力描述（如 ``MCP [amap]``），看不到确切标识符
+        ``mcp_amap``，因此常拼出 ``amap_mcp`` / ``mcp_amap_maps_weather`` 之类的变体。
+        这里对每个步骤做归一化：命中清单中任意真实能力即改写 step.capability，
+        避免校验拒绝导致整个 DAG 被丢弃。
+        """
+        real_names = [cap.name for cap in inventory.capabilities if cap.enabled]
+        real_set = set(real_names)
+        for step in dag.steps:
+            cap_name = step.capability
+            if cap_name in real_set:
+                continue
+            canonical = cls._resolve_capability(cap_name, real_names)
+            if canonical:
+                step.capability = canonical
+                logger.info(
+                    f"[Validator] 能力名归一化: '{cap_name}' -> '{canonical}'"
+                )
+
+    @classmethod
+    def _resolve_capability(cls, cap_name: str, real_names: list[str]) -> str:
+        """把 LLM 的猜测名映射到真实能力名；无法确定时返回空串。"""
+        # 1. 精确（大小写不敏感）
+        lowered = cap_name.lower()
+        for name in real_names:
+            if name.lower() == lowered:
+                return name
+        # 2. 令牌重叠：mcp_amap 与 amap_mcp / mcp_amap_maps_weather 共享 {amap, mcp}
+        cap_tokens = {t for t in lowered.replace("-", "_").split("_") if t}
+        best, best_score = "", -1
+        for name in real_names:
+            name_tokens = {t for t in name.lower().replace("-", "_").split("_") if t}
+            if not name_tokens:
+                continue
+            overlap = len(cap_tokens & name_tokens)
+            # 3. 或子串包含（server 名出现在猜测名中）
+            if any(t in lowered for t in name_tokens):
+                score = overlap + 1
+            else:
+                score = overlap
+            if score > best_score:
+                best, best_score = name, score
+        return best if best_score > 0 else ""
 
     @classmethod
     def _check_step_id_uniqueness(

@@ -21,11 +21,6 @@ from app.services.langfuse_client import get_langfuse, is_langfuse_enabled
 from app.services.prompt_context import wrap_context
 from app.services.zip_utils import extract_zip_safe
 
-# 匹配 <commands>[JSON 数组]</commands>
-COMMANDS_PATTERN = re.compile(
-    r"<commands>\s*(\[[\s\S]*?\])\s*</commands>", re.IGNORECASE
-)
-
 
 # ========== Phase 1: Skill Selection ==========
 
@@ -299,33 +294,104 @@ def parse_commands(full_content: str) -> tuple[str, list[dict]]:
     """
     从 LLM 回复中提取 <commands> 块。
     返回 (清理后的纯文本, commands 列表)。
+
+    兼容 LLM 输出两种格式：
+    - <commands>[...]</commands>  （完整闭合）
+    - <commands> [...]            （缺失闭合标签，按数组括号平衡截断）
     """
-    match = COMMANDS_PATTERN.search(full_content)
-    if not match:
+    raw_blocks = _extract_command_blocks(full_content)
+    if not raw_blocks:
         return full_content, []
 
+    commands: list[dict] = []
     try:
-        commands_data = json.loads(match.group(1))
-        if not isinstance(commands_data, list):
-            return full_content, []
-        valid = []
-        for cmd in commands_data:
-            if all(k in cmd for k in ("type", "description", "command", "risk")):
-                valid.append(
-                    {
-                        "type": cmd["type"],
-                        "description": cmd["description"],
-                        "command": cmd["command"],
-                        "cwd": cmd.get("cwd", ""),
-                        "risk": cmd["risk"],
-                    }
-                )
-        commands = valid
+        for block in raw_blocks:
+            commands_data = json.loads(block)
+            if not isinstance(commands_data, list):
+                continue
+            for cmd in commands_data:
+                if all(k in cmd for k in ("type", "description", "command", "risk")):
+                    commands.append(
+                        {
+                            "type": cmd["type"],
+                            "description": cmd["description"],
+                            "command": cmd["command"],
+                            "cwd": cmd.get("cwd", ""),
+                            "risk": cmd["risk"],
+                        }
+                    )
     except (json.JSONDecodeError, ValueError):
         logger.warning(
             f"[SkillLoad] Commands parse failed, content: {full_content[-200:]}"
         )
         return full_content, []
 
-    clean_content = COMMANDS_PATTERN.sub("", full_content).strip()
+    clean_content = _strip_command_blocks(full_content, raw_blocks).strip()
     return clean_content, commands
+
+
+def _extract_command_blocks(full_content: str) -> list[str]:
+    """
+    从文本中提取所有 <commands> 块内的 JSON 数组字符串。
+
+    用平衡括号扫描 `[...]`，不依赖 </commands> 是否存在，从而兼容
+    LLM 漏掉闭合标签的情况（用户实测曾输出 `<commands> [...]` 无闭合）。
+    """
+    blocks: list[str] = []
+    idx = 0
+    while True:
+        start = full_content.lower().find("<commands>", idx)
+        if start == -1:
+            break
+        bracket_open = full_content.find("[", start + len("<commands>"))
+        if bracket_open == -1:
+            break
+        # 平衡括号扫描，忽略字符串内的 [ ]
+        depth = 0
+        in_string = False
+        escape = False
+        end = -1
+        for i in range(bracket_open, len(full_content)):
+            ch = full_content[i]
+            if in_string:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+            elif ch == "[":
+                depth += 1
+            elif ch == "]":
+                depth -= 1
+                if depth == 0:
+                    end = i + 1
+                    break
+        if end == -1:
+            break
+        blocks.append(full_content[bracket_open:end])
+        idx = end
+    return blocks
+
+
+def _strip_command_blocks(full_content: str, blocks: list[str]) -> str:
+    """按提取到的块精确删除，保留其余文本。"""
+    cleaned = full_content
+    for block in blocks:
+        start = cleaned.find(block)
+        if start == -1:
+            continue
+        # 向前回溯到 <commands> 开始位置
+        tag_start = cleaned.rfind("<commands>", 0, start)
+        if tag_start == -1:
+            tag_start = start
+        end = start + len(block)
+        # 若闭合标签紧跟其后（允许前导空白），连同标签一并删除
+        tail = cleaned[end:]
+        if tail.lstrip().lower().startswith("</commands>"):
+            end += len(tail)
+        cleaned = cleaned[:tag_start] + cleaned[end:].lstrip()
+    return cleaned

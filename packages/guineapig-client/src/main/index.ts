@@ -23,7 +23,47 @@ const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged
 const ALLOWED_EXTERNAL_PROTOCOLS = new Set(['https:', 'http:', 'amapuri:'])
 
 /** execute-command 允许执行的已知二进制（首 token） */
-const ALLOWED_COMMAND_BINARIES = new Set(['npx', 'npm', 'node', 'python', 'python3', 'pip', 'pip3'])
+const DEFAULT_ALLOWED_COMMAND_BINARIES = [
+  // 开发/脚本类（原有）
+  'npx', 'npm', 'node', 'python', 'python3', 'pip', 'pip3',
+  // 系统只读/打开类（LLM 生成命令常用，无破坏性副作用）
+  'open', 'xdg-open', 'ls', 'cat', 'pwd', 'echo', 'which', 'head', 'tail', 'grep',
+]
+
+const CONFIG_FILE_NAME = 'command-whitelist.json'
+
+/** 当前生效的命令白名单（可配置，从 userData/command-whitelist.json 加载） */
+let allowedCommandBinaries: Set<string> = new Set(DEFAULT_ALLOWED_COMMAND_BINARIES)
+
+/**
+ * 加载命令白名单配置。
+ * 优先读取 userData/command-whitelist.json；文件缺失/损坏时写入默认配置并使用内置默认。
+ * 配置结构: { "allowedBinaries": ["open", "node", ...] }
+ */
+function loadCommandWhitelist(): void {
+  const configPath = path.join(app.getPath('userData'), CONFIG_FILE_NAME)
+  const defaultConfig = { allowedBinaries: DEFAULT_ALLOWED_COMMAND_BINARIES }
+  try {
+    if (fs.existsSync(configPath)) {
+      const raw = JSON.parse(fs.readFileSync(configPath, 'utf-8'))
+      const list = Array.isArray(raw?.allowedBinaries)
+        ? raw.allowedBinaries.filter((b: unknown) => typeof b === 'string' && b.trim())
+        : []
+      if (list.length > 0) {
+        allowedCommandBinaries = new Set(list.map((b: string) => b.toLowerCase()))
+        return
+      }
+    }
+    // 缺失或内容无效 → 写默认配置（供用户编辑），使用内置默认
+    fs.mkdirSync(app.getPath('userData'), { recursive: true })
+    fs.writeFileSync(configPath, JSON.stringify(defaultConfig, null, 2), 'utf-8')
+    allowedCommandBinaries = new Set(DEFAULT_ALLOWED_COMMAND_BINARIES)
+    logger.info(`[CommandWhitelist] 已生成默认配置: ${configPath}`)
+  } catch (e) {
+    logger.error(`[CommandWhitelist] 加载配置失败，使用内置默认: ${e}`)
+    allowedCommandBinaries = new Set(DEFAULT_ALLOWED_COMMAND_BINARIES)
+  }
+}
 
 /** 命令参数合法字符集（拒绝 shell 元字符 / 注入） */
 const SAFE_ARG_TOKEN = /^[A-Za-z0-9_./:@+=~-]+$/
@@ -211,6 +251,7 @@ function createOverlayWindow(page: string, queryString?: string) {
 
 app.whenReady().then(() => {
   logger.info('应用启动')
+  loadCommandWhitelist()
   createWindow()
 
   app.on('activate', () => {
@@ -619,7 +660,7 @@ function tokenizeCommand(command: string): string[] {
 
 function isAllowedBinary(binary: string, workingDir: string, skillsBase: string): boolean {
   const base = binary.toLowerCase()
-  if (ALLOWED_COMMAND_BINARIES.has(base)) return true
+  if (allowedCommandBinaries.has(base)) return true
   if (binary.includes('/') || binary.includes('\\')) {
     const resolved = path.resolve(workingDir, binary)
     if (resolved === skillsBase || resolved.startsWith(skillsBase + path.sep)) {

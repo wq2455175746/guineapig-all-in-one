@@ -1,32 +1,46 @@
 {
   "service": "all",
-  "task_id": "infrastructure-and-deployment",
-  "task_name": "基础设施完善：Docker + Helm + 部署配置",
-  "status": "in_progress",
-  "started_at": "2026-07-06",
-  "description": "完善项目基础设施：Dockerfile 多阶段构建、docker-compose 开发/生产环境、Helm Charts 部署、Makefile 标准化、.ai harness 文件同步更新",
+  "task_id": "full-project-optimization",
+  "task_name": "全项目优化：安全修复 + 性能提升 + 可维护性（.ai/TODO.md 14 项）",
+  "status": "completed",
+  "started_at": "2026-08-21",
+  "completed_at": "2026-09-06",
+  "description": "并行审查 4 个 package 后，通过 14 个任务批次修复全部优化点：P0 安全（zip-slip/ACL/鉴权/命令注入/IDOR/SSRF/WS 崩溃）、P1 性能（事件循环阻塞/超时/N+1/索引/连接池/背压/ECharts 泄漏/AudioWorklet）、P2 可维护性（agent.py 重构/死代码/依赖/日志/CRUD 样板）。每任务子代理实现 + 独立审查，最终整体审查后补齐 6 项集成缺口",
   "milestones": {
-    "Dockerfile 多阶段构建": "2026-07-06",
-    "docker-compose 开发/生产环境": "2026-07-06",
-    "Redis 用户聊天配置缓存 (Feishu Bot 模型选择)": "2026-07-06",
-    "Helm Charts 三服务部署": "2026-07-06",
-    ".ai harness 文件全面更新": "2026-07-06"
+    "aiagent P0 安全（zip-slip/ACL/预签名/凭据/URL编码/鉴权）": "2026-08-21",
+    "aiagent P1 性能（事件循环阻塞/超时/RAG/客户端复用）": "2026-08-21",
+    "aiagent P2 维护（agent.py 重构/死代码/依赖/request_id 日志）": "2026-08-21",
+    "client P0 安全（webSecurity/IPC/unzip/文件读/openExternal/登录RSA）": "2026-08-21",
+    "client P1（AudioWorklet/WS 鉴权）": "2026-08-21",
+    "ops-web P0（注册页/admin token）": "2026-08-21",
+    "ops-web P1/P2（ECharts 泄漏/CRUD 样板/路由守卫）": "2026-09-06",
+    "backend P0（HMAC 鉴权/IDOR/inner token/SSRF/WS 崩溃/死锁/登录RSA）": "2026-09-06",
+    "backend P1/P2（上下文/N+1/索引/日志/错误处理）": "2026-09-06",
+    "最终整体审查 + 6 项集成缺口修复": "2026-09-06"
   },
   "completed_tasks": [
-    "guineapig-backend/aiagent/ops-web Dockerfile 多阶段构建 + HEALTHCHECK",
-    "docker-compose.yml (dev) + docker-compose.prod.yml",
-    "Backend /health + /api/v1/health 端点 (前置 Auth 中间件)",
-    "Root Makefile docker-build/docker-push/docker-up/docker-down 目标",
-    "Redis user_chat_config.go (SetUserChatConfig / GetUserChatConfig)",
-    "SyncChatMessage 读取 Redis 配置 + 回退到 loadDefaultModelConfig",
-    "Helm Charts: backend/aiagent/ops-web 三服务 charts (dev/test/pre/release values)",
-    "ops-web nginx.conf ConfigMap 挂载 + backend config.yaml ConfigMap 挂载",
-    "AiAgent PVC 挂载 /app/data 用于技能数据"
+    "aiagent: ZIP SLIP 防护 + S3 ACL 私有化 + 预签名 URL 修复 + 凭据清理 + URL 编码",
+    "aiagent: 全接口 token 鉴权中间件 + prod CORS 收紧",
+    "aiagent: 事件循环阻塞修复（to_thread/AsyncOpenAI）+ 全链路超时",
+    "aiagent: RAG 任务管理 + 下载错误传播 + LLM/Milvus 客户端复用 + tqdm 移除",
+    "aiagent: agent.py 956 行单体重构 + 静默吞错 + 响应状态码映射",
+    "aiagent: 死代码清理 + 配置收敛 + LLM 重试/令牌预算 + 提示注入 + 依赖对齐 + request_id 日志",
+    "client: webSecurity/sandbox + IPC 命令白名单 + unzip→adm-zip + 文件读限制 + openExternal 白名单 + MD5→RSA 登录 + DevTools 仅 dev + temp 路径穿越",
+    "client: 录音迁移 AudioWorklet + WS 不再用裸 user_id",
+    "ops-web: 注册页修复 + admin token 清理 + .gitignore",
+    "ops-web: Dashboard ECharts 泄漏修复 + loadUsers 共享缓存",
+    "ops-web: usePagedList composable + 路由守卫 + 拦截器 + 按需 ECharts + 插槽 index",
+    "backend: HMAC 会话 Token 鉴权（弃用 X-User-Id）+ 全链路 IDOR 属主校验 + inner 共享 token + aimodel/test SSRF 白名单 + WS done+Once 防崩 + 关闭死锁 + 注册码 env + api_key HMAC 存储 + 登录 RSA 解密",
+    "backend: 请求上下文传播 + 超时 + goroutine 生命周期 + N+1 批量查询 + 性能索引迁移 + 共享 HTTP client + WS 背压",
+    "backend: message_count 原子自增 + 忽略错误审计 + 日志统一 zap + 死代码 + 配置化",
+    "最终整体审查：backend→aiagent X-Admin-Token 接线 + 预签名下载属主校验 + BizError 业务错误透出 + INNER_TOKEN 部署接线 + Makefile 测试防挂 + 打包公钥 IPC"
   ],
   "next_tasks": [
-    "添加 Makefile 中 Helm deploy/undeploy 目标",
-    "CI/CD pipeline 配置 (GitHub Actions / GitLab CI)",
-    "生产环境就绪性检查清单"
+    "部署配置：设置 JWT_SECRET / INNER_TOKEN / ADMIN_TOKEN / AIMODEL_ALLOWED_HOSTS / REGISTER_CODE",
+    "/api/v1/users 用户列表挪到 admin 路由（当前任意登录用户可枚举）",
+    "遗留依赖清理：pycryptodome / crypto-js / vue-echarts",
+    "chat_memory.go 硬编码 localhost:8000 兜底改配置",
+    "MD5 旧 api_key 行滚动升级到 HMAC"
   ],
-  "updated_at": "2026-07-26T18:32:59.767414"
+  "updated_at": "2026-09-06T22:00:00"
 }

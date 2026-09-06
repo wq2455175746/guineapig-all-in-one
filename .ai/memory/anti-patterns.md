@@ -125,3 +125,101 @@ def _parse_conversation_id(session_id: str) -> int:
     ...
 ```
 **原因**：Go 和 Python 对 session_id 格式的约定不一致时，没有统一解析入口。修复方式是在 aiagent 端做兼容性解析，因为 aiagent 是消费者，需要适应上游的各种格式
+
+## AP-017: ZIP 解压不校验成员路径（ZIP SLIP）
+**错误**：解压 zip 时 `os.path.join(extract_dir, member_path)` 直接写入，恶意条目 `../../etc/cron.d/evil` 逃逸解压目录
+```python
+target_path = os.path.join(extract_dir, member_path)  # ❌ 可穿越
+open(target_path, "wb").write(...)
+```
+**正确**：`normpath(join(extract_dir, member_path))` 后校验 `startswith(extract_dir + os.sep)`，拒绝绝对路径与 `..` 段，限制总大小与条目数
+**原因**：skill 来自用户上传的 zip，未校验即任意文件写入，RCE 风险
+
+## AP-018: S3 上传设置 public-read ACL 或剥除预签名签名
+**错误**：`put_object(..., ACL="public-read")` 让用户语音等隐私对象公开；`get_object_url` 里 `split("?")[0]` 把预签名签名剥掉变成永久公开链接
+**正确**：上传默认私有；返回完整预签名 URL（含 X-Amz-Signature）
+**原因**：用户 TTS/ASR 音频是隐私数据，公开可下载违反合规
+
+## AP-019: 加鉴权后不接线跨服务调用方
+**错误**：aiagent 加了 fail-closed 鉴权，但 backend 的 9 个调用点仍不带 token，整个运行时链路静默 401
+**正确**：加鉴权的同时，grep 所有调用方并接线共享 token（AttachAiAgentAuth / X-Inner-Token），docker-compose 共享值
+**原因**：服务间鉴权是双向契约，只改接收端不改调用端 = 全系统不可用，且单元测试无法发现
+
+## AP-020: 信任客户端可控的身份头（X-User-Id）
+**错误**：auth 中间件信任 `X-User-Id` header 且只查用户存在，任何人可伪造任意用户身份
+```go
+userID, _ := strconv.Atoi(c.Request().Header.Get("X-User-Id"))  // ❌ 不可信
+```
+**正确**：身份从可验证 token（HMAC/JWT）推导，常量时间比较；客户端输入的 user_id 一律以 token 身份覆盖
+**原因**：header 完全由客户端控制，等于无鉴权
+
+## AP-021: 对客户端提供的 URL 发送解密后的密钥（SSRF + 解密预言机）
+**错误**：aimodel/test 把 RSA 解密的 api_key 明文发给客户端提供的 apiUrl，攻击者指向自己服务器即可拿到任意密文的明文，且 apiUrl 任意可 SSRF 内网
+**正确**：apiUrl 加入网络 allowlist（未配置仅允许回环），DB 模型用登记 api_url，请求绑定 context + 超时
+**原因**：服务端拿私钥解密后发给攻击者控制的地址 = 私钥保护的密钥全量泄漏
+
+## AP-022: WebSocket Send channel 被 close 后仍有 goroutine 发送
+**错误**：`close(client.Send)` 后后台 goroutine 继续 `client.Send <- data`，send on closed channel panic 崩溃整个进程
+```go
+close(client.Send)  // ❌ 仍有 writer 在发送
+```
+**正确**：Send 永不 close，用 done chan + sync.Once 的 Close()，sendToClient select done 丢弃，goroutine 全加 recover()
+**原因**：WS 断连后流式回复 goroutine 仍在运行，panic 无 recover 覆盖 Echo 中间件，直接进程崩溃
+
+## AP-023: async 路由中直接调用同步阻塞 LLM
+**错误**：async SSE 路由里直接 `client.chat.completions.create(...)`（同步），一次 LLM 往返阻塞整个事件循环
+**正确**：asyncio.to_thread 包装同步调用，或改用 AsyncOpenAI；所有外部调用显式 timeout
+**原因**：并发下单个慢 LLM 请求冻结所有其他请求
+
+## AP-024: Fire-and-forget asyncio.create_task 无引用无异常处理
+**错误**：`asyncio.create_task(_run_embedding_async(params))` 丢弃引用，异常被静默吞掉，任务可能被 GC
+**正确**：保留 task 引用（set），done 回调记录异常，服务关闭时取消
+**原因**：后台任务失败无感知，资源泄漏
+
+## AP-025: 业务错误与内部错误混用一个响应函数导致用户可读信息被屏蔽
+**错误**：ResponseServerError 一律返回通用"系统错误"，导致"无权操作该会话"等业务错误用户不可见
+**正确**：BizError(code,msg) 走用户可见分支（errors.As），仅真实内部错误（SQL/路径）走通用错误+服务端日志
+**原因**：安全修复（不泄漏内部细节）与可用性（保留业务提示）必须同时满足
+
+## AP-026: CJS 库打进 ESM 主进程包却不进 external
+**错误**：client 主进程为 ESM（`"type": "module"`），引入 CJS 库 `adm-zip` 且未加入 vite `rollupOptions.external`，rolldown 将其内联后把 `require("fs")` 编译为 `__require("fs")` 代理
+```js
+// dist/electron/index.js 运行时报错
+var fsystem = __require("fs")  // ❌ ESM 作用域无 require → App threw an error during load
+```
+**正确**：所有 CJS/原生依赖（adm-zip/archiver/node-machine-id/@modelcontextprotocol/sdk）都进 `external`，运行时由 Electron 以真实 CJS 加载
+**原因**：rolldown 对打进 ESM bundle 的 CJS 代码里的 Node 内建 require 无法转换，只能在运行时抛错
+
+## AP-027: CORS 白名单只配 .local 域名忽略 localhost
+**错误**：backend `corsHosts` 只写 `http://guineapig-client.local:5174`，而 dev 时 vite 在 5173 被占后顺延到 5174，origin 是 `http://localhost:5174`，预检没有 Access-Control-Allow-Origin
+**正确**：白名单同时覆盖 `.local` 与 `localhost` 两种访问方式（localhost:5173/5174），并提醒改动后需重启 backend
+**原因**：Echo CORS 中间件对未匹配 origin 不返回 CORS 头，浏览器直接拦截预检，表现成 `ERR_FAILED` 而非 403，容易误判为网络故障
+
+## AP-028: 加鉴权中间件后不把 token 配置进各环境 .env
+**错误**：aiagent 加了 fail-closed 的 AdminTokenAuthMiddleware，但本地 .env 没有 ADMIN_TOKEN（默认空），backend→aiagent 全部 401，运行时链路静默断掉
+```bash
+# aiagent .env 缺这一行
+# ADMIN_TOKEN=...
+```
+**正确**：加鉴权的同时，把 ADMIN_TOKEN 写进所有运行环境（dev .env / docker-compose / prod），且 backend 与 aiagent 值保持一致
+**原因**：fail-closed 设计安全，但漏配 token 时所有非白名单接口 401，且单元测试发现不了（单测不经过真实网络链路）
+
+## AP-029: 把不确定的 LLM 输出直接当精确键匹配
+**错误**：DAG 执行用 LLM 生成的 capability 名做精确匹配/校验，LLM 看不到确切标识符就只能猜，猜错（amap_mcp / mcp_amap_maps_weather）就整个 DAG 被丢或 URL 匹配失败
+**正确**：①prompt 展示确切标识符并强制原样使用；②消费端做模糊归一化（token 重叠 → 真实名）；③能注入的连接信息（mcp_url 等）走服务端匹配注入而非依赖 LLM 输出
+**原因**：LLM 输出天然不稳定，凡是非确定性输出参与路由/匹配，必须有归一化兜底，否则行为随 LLM 心情波动，表现为"时好时坏"难排查
+
+## AP-030: 多个 Origin 白名单各自维护、漏配 localhost
+**错误**：backend 同时有 CORS AllowOrigins（config.yaml）和 gorilla CheckOrigin（websocket.go）两套白名单，都只配 .local 域名，vite 顺延端口后 dev 以 localhost 访问，CORS 预检和 WS 握手先后失败（ERR_FAILED / 403）
+**正确**：所有 Origin 白名单统一考虑 .local 与 localhost 两种访问方式；新增 host 时同步检查 CORS、CheckOrigin 两处；配置类改动（config.yaml）需重启服务生效
+**原因**：Origin 校验分散在多层，漏一处就出现诡异症状（预检失败表现为 ERR_FAILED、WS 表现为 403），容易误判为网络/鉴权问题
+
+## AP-031: 解析 LLM 输出时用"强制格式"正则而非容错解析
+**错误**：parse_commands 用 `<commands>\s*(\[...\])\s*</commands>` 严格正则，LLM 漏掉 `</commands>` 闭合标签就整体解析失败——命令块当纯文本显示、done 事件不带 commands、确认框不弹出
+**正确**：对 LLM 输出的结构化标签做容错解析：平衡括号扫描提取 JSON 数组（不依赖闭合标签存在），正确处理字符串内嵌套数组；并为每种容错场景写回归测试
+**原因**：LLM 输出格式天然不稳定（漏闭合标签、大小写、多余空白），严格正则把"格式偏差"当成"无内容"，功能静默失效且难排查
+
+## AP-032: 允许 LLM 无限循环执行而不设轮次上限
+**错误**：handleCommandResult 把命令执行结果注入 system prompt 并提示"可以生成新命令继续执行"，无轮次上限；LLM 对一次性任务也反复生成相同命令，确认框无限循环（日志 conv_id=83 连续 4 轮 messages 递增）
+**正确**：后端 Redis 计数器限制命令轮次（MaxCommandRounds=3），达上限丢弃 commands 兜底；prompt 明确任务完成即总结、标明剩余轮次；客户端对相同命令签名去重；用户新消息清零计数
+**原因**：任何"LLM 驱动的循环动作"都必须有硬性轮次上限——prompt 约束是软性的，LLM 可能忽略；三层（后端硬限+prompt 引导+客户端去重）才能防住
