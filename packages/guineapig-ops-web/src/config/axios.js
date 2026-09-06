@@ -8,10 +8,12 @@ const instance = axios.create({
 // 请求拦截器：自动注入管理后台 Token
 instance.interceptors.request.use(
   config => {
-    // 从 localStorage 获取 admin token，优先使用
-    const adminToken = localStorage.getItem('admin_token') || import.meta.env.VITE_ADMIN_TOKEN || 'guineapig-admin-dev-token'
+    // 从 localStorage 获取 admin token，优先使用；否则从环境变量读取
+    const adminToken = localStorage.getItem('admin_token') || import.meta.env.VITE_ADMIN_TOKEN
     if (adminToken) {
       config.headers['X-Admin-Token'] = adminToken
+    } else {
+      console.warn('[axios] 未配置 admin token，请在 .env 中设置 VITE_ADMIN_TOKEN')
     }
     return config
   },

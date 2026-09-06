@@ -16,6 +16,10 @@ const WEBSOCKET_BASE_URL = (function() {
 const ADMIN_PREFIX = `${API_BASE_URL}/admin/api/v1`
 
 export const API_ENDPOINTS = {
+  AUTH: {
+    REGISTER: `${API_BASE_URL}/api/v1/client/register`,
+    LOGIN: `${API_BASE_URL}/api/v1/client/login`
+  },
   USERS: {
     SEARCH: `${ADMIN_PREFIX}/user/search`,
     LIST: `${ADMIN_PREFIX}/users`,
