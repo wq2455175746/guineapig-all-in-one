@@ -17,15 +17,11 @@ export default defineConfig({
     proxy: {
       '/admin/api/v1': {
         target: 'http://guineapig-ops.local:6880',
-        changeOrigin: true,
-        secure: true,
-        rewrite: (path) => path.replace(/^\/admin\/api\/v1/, '/admin/api/v1')
+        changeOrigin: true
       },
       '/api/v1': {
         target: 'http://guineapig-ops.local:6880',
-        changeOrigin: true,
-        secure: true,
-        rewrite: (path) => path.replace(/^\/api\/v1/, '/api/v1')
+        changeOrigin: true
       }
     }
   }

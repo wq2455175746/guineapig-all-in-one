@@ -22,8 +22,8 @@
             <TabPanel value="scheduler">
               <DataTable :value="schedulerTasks" size="small" tableStyle="min-width: 50rem" :loading="loading">
                 <Column header="序号">
-                  <template #body="{ data }">
-                    {{ schedulerTasks.indexOf(data) + 1 }}
+                  <template #body="{ index }">
+                    {{ index + 1 }}
                   </template>
                 </Column>
                 <Column field="taskType" header="任务类型" />
@@ -58,8 +58,8 @@
             <TabPanel value="registered">
               <DataTable :value="registeredTasks" size="small" tableStyle="min-width: 50rem">
                 <Column header="序号">
-                  <template #body="{ data }">
-                    {{ registeredTasks.indexOf(data) + 1 }}
+                  <template #body="{ index }">
+                    {{ index + 1 }}
                   </template>
                 </Column>
                 <Column field="type" header="任务类型">
@@ -131,7 +131,6 @@ async function fetchTasks() {
 }
 
 onMounted(() => {
-  document.title = '定时任务管理'
   fetchTasks()
 })
 </script>

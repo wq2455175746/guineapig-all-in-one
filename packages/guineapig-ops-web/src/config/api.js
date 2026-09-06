@@ -1,10 +1,10 @@
 // API endpoint configuration
-const API_BASE_URL = process.env.NODE_ENV === 'development'
+const API_BASE_URL = import.meta.env.DEV
   ? 'http://guineapig-ops-web.local:6880'
   : `${window.location.protocol}//${window.location.hostname}${window.location.port ? ':' + window.location.port : ''}`
 
 const WEBSOCKET_BASE_URL = (function() {
-  if (process.env.NODE_ENV === 'development') {
+  if (import.meta.env.DEV) {
     return 'ws://guineapig-ops-web.local:6880';
   }
   let wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';

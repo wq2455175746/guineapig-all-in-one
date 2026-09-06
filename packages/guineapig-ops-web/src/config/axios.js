@@ -1,4 +1,5 @@
 import axios from 'axios'
+import ToastEventBus from 'primevue/toasteventbus'
 
 // 创建 axios 实例
 const instance = axios.create({
@@ -33,18 +34,28 @@ instance.interceptors.request.use(
 //   error => Promise.reject(error)
 // )
 
-// 响应拦截器
-// instance.interceptors.response.use(
-//   response => response,
-//   error => {
-//     if (error.response?.status === 401) {
-//       // 跳转到auth/login并带redirectUrl
-//       const loginUrl = `${API_ENDPOINTS.AUTH.LOGIN}?redirectUrl=${encodeURIComponent(window.location.href)}`
-//       window.location.href = loginUrl
-//       return Promise.reject('未登录')
-//     }
-//     return Promise.reject(error)
-//   }
-// )
+// 响应拦截器：业务错误（code !== 0）统一 toast；HTTP 401 清理 token 并跳转登录页。
+// 注意：不改变响应结构，视图仍然读取 res.data.code/result/message，避免大规模改动。
+instance.interceptors.response.use(
+  response => {
+    const data = response.data
+    if (data && typeof data === 'object' && data.code !== undefined && data.code !== 0) {
+      ToastEventBus.emit('add', {
+        severity: 'error',
+        summary: '请求失败',
+        detail: data.message || `错误码 ${data.code}`,
+        life: 3000
+      })
+    }
+    return response
+  },
+  error => {
+    if (error.response?.status === 401) {
+      localStorage.removeItem('admin_token')
+      window.location.href = '/register'
+    }
+    return Promise.reject(error)
+  }
+)
 
 export default instance 

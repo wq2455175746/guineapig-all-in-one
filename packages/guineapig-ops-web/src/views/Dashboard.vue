@@ -77,10 +77,16 @@ import { ref, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { useToast } from 'primevue/usetoast'
 import Select from 'primevue/select'
 import Button from 'primevue/button'
-import * as echarts from 'echarts'
+import * as echarts from 'echarts/core'
+import { LineChart, PieChart } from 'echarts/charts'
+import { GridComponent, TooltipComponent, LegendComponent } from 'echarts/components'
+import { CanvasRenderer } from 'echarts/renderers'
+import { use } from 'echarts/core'
 import { API_ENDPOINTS } from '@/config/api'
 import request from '@/config/axios'
 import { useUserOptions } from '@/composables/useUserOptions'
+
+use([LineChart, PieChart, GridComponent, TooltipComponent, LegendComponent, CanvasRenderer])
 
 const toast = useToast()
 

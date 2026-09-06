@@ -206,7 +206,6 @@ function onConfirm() {
 }
 
 onMounted(() => {
-  document.title = '用户列表 - 自动化测评平台'
   fetchUsers()
 })
 </script>

@@ -28,8 +28,8 @@
           :totalRecords="total" :lazy="true" @page="onPage" currentPageReportTemplate="共 {totalRecords} 条"
           tableStyle="min-width: 60rem" :loading="loading">
           <Column header="序号">
-            <template #body="{ data }">
-              {{ items.indexOf(data) + 1 + (pageNum - 1) * pageSize }}
+            <template #body="{ index }">
+              {{ index + 1 + (pageNum - 1) * pageSize }}
             </template>
           </Column>
           <Column field="id" header="文件ID" headerStyle="min-width: 70px" />
@@ -72,7 +72,6 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
-import { useToast } from 'primevue/usetoast'
 import Card from 'primevue/card'
 import DataTable from 'primevue/datatable'
 import Column from 'primevue/column'
@@ -83,10 +82,9 @@ import InputIcon from 'primevue/inputicon'
 import Tag from 'primevue/tag'
 import Select from 'primevue/select'
 import { API_ENDPOINTS } from '@/config/api'
-import request from '@/config/axios'
+import { usePagedList } from '@/composables/usePagedList'
 import { useUserOptions } from '@/composables/useUserOptions'
-
-const toast = useToast()
+import { formatTime } from '@/utils/format'
 
 // ========== Filters ==========
 const filterUserId = ref(null)
@@ -128,55 +126,13 @@ function embedSeverity(val) {
 }
 
 // ========== List ==========
-const items = ref([])
-const total = ref(0)
-const loading = ref(false)
-const pageSize = ref(10)
-const pageNum = ref(1)
-const searchQuery = ref('')
-
-async function fetchList() {
-  loading.value = true
-  try {
-    const params = { pageSize: pageSize.value, pageNum: pageNum.value }
-    if (filterUserId.value) params.user_id = filterUserId.value
-    if (filterFileType.value !== null && filterFileType.value !== undefined) params.file_type = filterFileType.value
-    if (searchQuery.value.trim()) params.keywords = searchQuery.value.trim()
-
-    const res = await request.get(API_ENDPOINTS.FILE.LIST, { params })
-    if (res.data?.code !== 0) {
-      toast.add({ severity: 'error', summary: '加载失败', detail: res.data?.message, life: 3000 })
-      return
-    }
-    items.value = res.data.result?.items || []
-    total.value = res.data.result?.total || 0
-  } catch (err) {
-    toast.add({ severity: 'error', summary: '请求失败', detail: String(err), life: 3000 })
-  } finally {
-    loading.value = false
-  }
-}
-
-function handleSearch() {
-  pageNum.value = 1
-  fetchList()
-}
-
-function onPage(event) {
-  pageNum.value = event.page + 1
-  pageSize.value = event.rows
-  fetchList()
-}
-
-function onFilterChange() {
-  pageNum.value = 1
-  fetchList()
-}
-
-function formatTime(t) {
-  if (!t) return '-'
-  return t.substring(0, 16).replace('T', ' ')
-}
+const { items, total, loading, pageSize, pageNum, searchQuery, fetchList, handleSearch, onPage, onFilterChange } =
+  usePagedList(API_ENDPOINTS.FILE.LIST, {
+    filters: [
+      { key: 'user_id', value: filterUserId },
+      { key: 'file_type', value: filterFileType }
+    ]
+  })
 
 onMounted(() => {
   loadUsers()

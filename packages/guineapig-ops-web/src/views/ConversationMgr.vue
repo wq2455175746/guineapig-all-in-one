@@ -7,7 +7,7 @@
             <div class="filter-item">
               <span class="filter-label">用户：</span>
               <Select v-model="filterUserId" :options="userOptions" optionValue="id" optionLabel="label"
-                placeholder="全部用户" showClear filter style="width: 200px" @change="onUserFilterChange" />
+                placeholder="全部用户" showClear filter style="width: 200px" @change="onFilterChange" />
             </div>
           </div>
           <div class="search-area">
@@ -24,8 +24,8 @@
           :totalRecords="total" :lazy="true" @page="onPage" currentPageReportTemplate="共 {totalRecords} 条"
           tableStyle="min-width: 50rem" :loading="loading">
           <Column header="序号">
-            <template #body="{ data }">
-              {{ items.indexOf(data) + 1 + (pageNum - 1) * pageSize }}
+            <template #body="{ index }">
+              {{ index + 1 + (pageNum - 1) * pageSize }}
             </template>
           </Column>
           <Column field="id" header="对话ID" headerStyle="min-width: 80px" />
@@ -90,11 +90,11 @@
             </div>
             <h4 style="margin: 0; font-size: 14px; color: #333;">消息列表</h4>
             <DataTable :value="messageItems" size="small" paginator :rows="msgPageSize"
-              :rowsPerPageOptions="[10, 20, 50]" :totalRecords="msgTotal" :lazy="true"
+              :rowsPerPageOptions="[10, 20, 50]" :first="(msgPageNum - 1) * msgPageSize" @page="onMsgPage"
               tableStyle="min-width: 40rem" :loading="msgLoading">
               <Column header="序号">
-                <template #body="{ data }">
-                  {{ messageItems.indexOf(data) + 1 }}
+                <template #body="{ index }">
+                  {{ index + 1 + (msgPageNum - 1) * msgPageSize }}
                 </template>
               </Column>
               <Column field="role" header="角色">
@@ -125,7 +125,6 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
-import { useToast } from 'primevue/usetoast'
 import Card from 'primevue/card'
 import DataTable from 'primevue/datatable'
 import Column from 'primevue/column'
@@ -138,9 +137,9 @@ import Dialog from 'primevue/dialog'
 import Select from 'primevue/select'
 import { API_ENDPOINTS } from '@/config/api'
 import request from '@/config/axios'
+import { usePagedList } from '@/composables/usePagedList'
 import { useUserOptions } from '@/composables/useUserOptions'
-
-const toast = useToast()
+import { formatTime } from '@/utils/format'
 
 // User filter
 const filterUserId = ref(null)
@@ -150,74 +149,23 @@ function getUserLabel(userId) {
   return userMap.value[userId] || `用户#${userId}`
 }
 
-function onUserFilterChange() {
-  pageNum.value = 1
-  fetchList()
-}
-
 // ========== 对话历史列表 ==========
-const items = ref([])
-const total = ref(0)
-const loading = ref(false)
-const pageSize = ref(10)
-const pageNum = ref(1)
-const searchQuery = ref('')
-
-async function fetchList() {
-  loading.value = true
-  try {
-    const params = {
-      pageSize: pageSize.value,
-      pageNum: pageNum.value,
-    }
-    if (filterUserId.value) {
-      params.user_id = filterUserId.value
-    }
-    if (searchQuery.value.trim()) {
-      params.keywords = searchQuery.value.trim()
-    }
-    const res = await request.get(API_ENDPOINTS.CHAT.CONVERSATION_HISTORY, { params })
-    if (res.data?.code !== 0) {
-      toast.add({ severity: 'error', summary: '加载失败', detail: res.data?.message, life: 3000 })
-      return
-    }
-    items.value = res.data.result?.items || []
-    total.value = res.data.result?.total || 0
-  } catch (err) {
-    toast.add({ severity: 'error', summary: '请求失败', detail: String(err), life: 3000 })
-  } finally {
-    loading.value = false
-  }
-}
-
-function handleSearch() {
-  pageNum.value = 1
-  fetchList()
-}
-
-function onPage(event) {
-  pageNum.value = event.page + 1
-  pageSize.value = event.rows
-  fetchList()
-}
-
-function formatTime(t) {
-  if (!t) return '-'
-  return t.substring(0, 16).replace('T', ' ')
-}
+const { items, total, loading, pageSize, pageNum, searchQuery, fetchList, handleSearch, onPage, onFilterChange } =
+  usePagedList(API_ENDPOINTS.CHAT.CONVERSATION_HISTORY, { filters: [{ key: 'user_id', value: filterUserId }] })
 
 // ========== 查看详情 ==========
 const detailDialogVisible = ref(false)
 const detailConvId = ref(0)
 const detailTitle = ref('')
 const messageItems = ref([])
-const msgTotal = ref(0)
 const msgLoading = ref(false)
 const msgPageSize = ref(10)
+const msgPageNum = ref(1)
 
 async function viewDetail(data) {
   detailTitle.value = data.title
   detailConvId.value = data.id
+  msgPageNum.value = 1
   await fetchMessages()
   detailDialogVisible.value = true
 }
@@ -231,7 +179,6 @@ async function fetchMessages() {
     })
     if (res.data?.code === 0 && res.data?.result) {
       messageItems.value = res.data.result.items || []
-      msgTotal.value = messageItems.value.length
     }
   } catch (err) {
     console.error('加载消息失败:', err)
@@ -240,9 +187,9 @@ async function fetchMessages() {
   }
 }
 
-function formatTime2(t) {
-  if (!t) return '-'
-  return t.substring(0, 16).replace('T', ' ')
+function onMsgPage(event) {
+  msgPageNum.value = event.page + 1
+  msgPageSize.value = event.rows
 }
 
 onMounted(() => {

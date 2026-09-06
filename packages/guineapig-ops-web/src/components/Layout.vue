@@ -115,7 +115,8 @@ function toggleUserMenu(event) {
 }
 
 function handleLogout() {
-  // window.location.href = API_ENDPOINTS.AUTH.LOGOUT
+  localStorage.removeItem('admin_token')
+  router.push('/register')
 }
 </script>
 
