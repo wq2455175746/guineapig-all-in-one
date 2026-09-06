@@ -10,6 +10,7 @@ from datetime import datetime
 from app.config import settings
 from app.core.log import logger
 from app.core.oss_wrapper_utils import download_file_from_s3
+from app.core.milvus_clients import get_milvus_client
 
 
 class TextChunker:
@@ -117,13 +118,8 @@ class MilvusWriter:
         self.db_name = db_name
 
     def _make_client(self, db_name: str | None = None):
-        """创建 MilvusClient 实例"""
-        from pymilvus import MilvusClient
-
-        return MilvusClient(
-            uri=f"http://{self.host}:{self.port}",
-            db_name=db_name or self.db_name,
-        )
+        """获取 MilvusClient 实例（按线程缓存复用，避免每次新建连接）"""
+        return get_milvus_client(self.host, self.port, db_name or self.db_name)
 
     def ensure_collection(self, collection_name: str, dimension: int):
         """确保数据库和集合存在，返回指向目标数据库的 MilvusClient"""
@@ -187,8 +183,6 @@ class MilvusWriter:
 
     def delete_by_file_id(self, collection_name: str, file_id: int):
         """根据 file_id 删除 Milvus 集合中的记录"""
-        from pymilvus import MilvusClient
-
         client = self._make_client()
         if not client.has_collection(collection_name):
             logger.warning(f"集合不存在，跳过删除: {collection_name}")

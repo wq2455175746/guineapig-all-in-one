@@ -19,6 +19,16 @@ def _patch_llm_settings(mocker, api_key="test_key", base_url="https://test.api.c
     mocker.patch("app.config.settings.LLM_MODEL_NAME", model_name)
 
 
+def _reset_llm_state():
+    """清空共享 LLM 客户端缓存与 handle_llmservice 模块级缓存"""
+    import app.core.llm_clients as llm_clients
+    import app.services.handle_llmservice as llm_service
+
+    llm_clients.clear_llm_clients()
+    llm_service._llm_client = None
+    llm_service._model_name = None
+
+
 class TestGetLlmResponse:
     """get_llm_response 单元测试"""
 
@@ -33,11 +43,10 @@ class TestGetLlmResponse:
         mock_client = mocker.MagicMock()
         mock_client.chat.completions.create.return_value = mock_completion
 
-        mocker.patch("app.services.handle_llmservice.OpenAI", return_value=mock_client)
+        mocker.patch("app.core.llm_clients.OpenAI", return_value=mock_client)
 
         import app.services.handle_llmservice as llm_service
-        llm_service._llm_client = None
-        llm_service._model_name = None
+        _reset_llm_state()
 
         _patch_llm_settings(mocker)
 
@@ -49,8 +58,7 @@ class TestGetLlmResponse:
     def test_missing_api_key(self, mocker):
         """缺少 LLM_API_KEY 时应抛出 ValueError"""
         import app.services.handle_llmservice as llm_service
-        llm_service._llm_client = None
-        llm_service._model_name = None
+        _reset_llm_state()
 
         # LLM_API_KEY 为空（默认值）
         mocker.patch("app.config.settings.LLM_API_KEY", "")
@@ -69,11 +77,10 @@ class TestGetLlmResponse:
         mock_client = mocker.MagicMock()
         mock_client.chat.completions.create.return_value = mock_completion
 
-        mocker.patch("app.services.handle_llmservice.OpenAI", return_value=mock_client)
+        mocker.patch("app.core.llm_clients.OpenAI", return_value=mock_client)
 
         import app.services.handle_llmservice as llm_service
-        llm_service._llm_client = None
-        llm_service._model_name = None
+        _reset_llm_state()
 
         _patch_llm_settings(mocker, api_key="test_key")
 
@@ -93,11 +100,10 @@ class TestGetLlmResponse:
         mock_client = mocker.MagicMock()
         mock_client.chat.completions.create.return_value.choices[0].message.content = "ok"
 
-        mock_openai_cls = mocker.patch("app.services.handle_llmservice.OpenAI", return_value=mock_client)
+        mock_openai_cls = mocker.patch("app.core.llm_clients.OpenAI", return_value=mock_client)
 
         import app.services.handle_llmservice as llm_service
-        llm_service._llm_client = None
-        llm_service._model_name = None
+        _reset_llm_state()
 
         _patch_llm_settings(mocker, api_key="test_key")
 

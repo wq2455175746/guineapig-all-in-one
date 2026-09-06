@@ -15,6 +15,7 @@ from openai import OpenAI
 
 from app.config import settings
 from app.core.log import logger
+from app.core.llm_clients import get_llm_client
 from app.services.langfuse_client import get_langfuse, is_langfuse_enabled
 
 from ..models import DeepAnalysisResult, CapabilityInventory
@@ -29,7 +30,7 @@ class DeepAnalyzer:
         """获取 LLM 客户端（惰性初始化，复用 settings 配置）"""
         if not settings.LLM_API_KEY:
             raise ValueError("LLM_API_KEY not set in .env — 无法进行深度意图分析")
-        client = OpenAI(
+        client = get_llm_client(
             api_key=settings.LLM_API_KEY,
             base_url=settings.LLM_BASE_URL,
             timeout=120.0,

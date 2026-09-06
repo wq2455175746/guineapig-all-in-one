@@ -14,12 +14,11 @@ import zipfile
 
 from app.config import settings
 from app.core.log import logger
+from app.core.llm_clients import get_async_llm_client
 from app.core.oss_wrapper_utils import download_file_from_s3
 from app.schemas.llm_models import SkillInfo
 from app.services.langfuse_client import get_langfuse, is_langfuse_enabled
 from app.services.zip_utils import extract_zip_safe
-
-from openai import AsyncOpenAI
 
 # 匹配 <commands>[JSON 数组]</commands>
 COMMANDS_PATTERN = re.compile(
@@ -64,7 +63,7 @@ async def select_relevant_skills(
         },
     ]
 
-    client = AsyncOpenAI(api_key=api_key, base_url=base_url, timeout=60.0)
+    client = get_async_llm_client(api_key=api_key, base_url=base_url, timeout=60.0)
 
     # ── Langfuse Generation Span ──
     langfuse_gen = None

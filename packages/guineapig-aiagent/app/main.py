@@ -62,6 +62,9 @@ async def lifespan(app: FastAPI):
     await otel_service.close()
     # Redis 连接已被移除（不再需要 PipelineSession Redis 功能）
 
+    # 5. 取消未完成的 RAG 后台嵌入任务
+    rag.cancel_pending_embedding_tasks()
+
 
 # 创建FastAPI应用
 app = FastAPI(

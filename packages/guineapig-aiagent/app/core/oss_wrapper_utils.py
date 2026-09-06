@@ -167,8 +167,8 @@ def download_file_from_s3(remote_path: str, local_path: str):
     Args:
         remote_path (str): OSS 中的对象键（例如 'file.txt'）
         local_path (str): 本地保存路径（例如 '/tmp/file.txt'）
-    Raises:
-        Exception: 如果下载失败（如权限错误、对象不存在等）
+    Returns:
+        bool: 下载是否成功
     """
     # 确保本地目录存在
     local_dir = os.path.dirname(local_path)
@@ -187,6 +187,9 @@ def download_file_from_s3(remote_path: str, local_path: str):
             logger.error(f"无权限访问文件: {remote_path}")
         else:
             logger.error(f"下载失败 ({error_code}): {e}")
+        return False
+    except (IOError, OSError) as e:
+        logger.error(f"本地写入失败: {local_path}: {e}")
         return False
 
 def list_folders(prefix=""):

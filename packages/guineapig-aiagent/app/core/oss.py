@@ -8,7 +8,6 @@ from io import BytesIO
 import boto3
 import requests
 from botocore.exceptions import ClientError
-from tqdm import tqdm
 from app.config import settings
 from app.core.log import logger
 
@@ -94,25 +93,17 @@ class OSS:
             raise  # 重新抛出异常，让调用者处理
 
     def _download_single(self, remote_path, disk_path, chunk_size=1024 * 64):
-        try:
-            resp = self.s3_client.get_object(Bucket=self.bucket_name, Key=remote_path)
-            content_length = resp["ContentLength"]
-            body = resp["Body"]
-            with open(disk_path, "wb") as f:
-                print(f"Downloading {remote_path} ...")
-                # 使用tqdm显示下载进度 - 修复兼容性问题
-                pbar = tqdm(total=content_length, unit="B", unit_scale=True)
-                try:
-                    for chunk in body.iter_chunks(chunk_size):
-                        f.write(chunk)
-                        pbar.update(len(chunk))
-                finally:
-                    pbar.close()
-        except (ClientError, IOError) as e:
-            logger.error(e)
+        """下载单个文件到磁盘。失败时（ClientError/IOError）直接向上抛出，不静默吞掉。"""
+        resp = self.s3_client.get_object(Bucket=self.bucket_name, Key=remote_path)
+        content_length = resp["ContentLength"]
+        body = resp["Body"]
+        with open(disk_path, "wb") as f:
+            logger.info(f"Downloading {remote_path} ... ({content_length} bytes)")
+            for chunk in body.iter_chunks(chunk_size):
+                f.write(chunk)
 
     def download_object_as_bytesIO(self, remote_path: str, chunk_size: int = 1024 * 64) -> BytesIO:
-        """从对象存储下载文件并返回BytesIO对象，带进度条显示
+        """从对象存储下载文件并返回BytesIO对象
         
         Args:
             remote_path: 远程文件路径
@@ -123,20 +114,13 @@ class OSS:
         """
         try:
             resp = self.s3_client.get_object(Bucket=self.bucket_name, Key=remote_path)
-            content_length = resp["ContentLength"]
             body = resp["Body"]
             
             # 创建BytesIO对象
             bytes_io = BytesIO()
             
-            # 使用tqdm显示下载进度 - 修复兼容性问题
-            pbar = tqdm(total=content_length, unit="B", unit_scale=True, desc=f"Download {os.path.basename(remote_path)}")
-            try:
-                for chunk in body.iter_chunks(chunk_size):
-                    bytes_io.write(chunk)
-                    pbar.update(len(chunk))
-            finally:
-                pbar.close()
+            for chunk in body.iter_chunks(chunk_size):
+                bytes_io.write(chunk)
             
             # 重置指针到开头以便后续读取
             bytes_io.seek(0)
@@ -195,7 +179,7 @@ class OSS:
                 disk_name = os.path.join(disk_path, remo_disk_dir)
                 disk_dir = os.path.split(disk_name)[0]
                 if os.path.exists(disk_name):
-                    print(f"{disk_name} exists, skip downloading.")
+                    logger.info(f"{disk_name} exists, skip downloading.")
                     continue
                 if (not os.path.exists(disk_dir)) and disk_dir:
                     os.makedirs(disk_dir, exist_ok=True)

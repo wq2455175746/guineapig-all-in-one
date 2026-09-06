@@ -3,10 +3,10 @@
 import os
 import json
 import httpx
-from openai import OpenAI
 
 from app.config import settings
 from app.core.log import logger
+from app.core.llm_clients import get_llm_client
 from app.schemas.memory_models import MemorySummarizeRequest
 
 MEMORY_TEMPLATE_PATH = os.path.join(
@@ -176,7 +176,7 @@ def process_memory_summarize(req: MemorySummarizeRequest):
 
     # 2. 调用 LLM
     try:
-        client = OpenAI(
+        client = get_llm_client(
             api_key=req.model_info.api_key,
             base_url=req.model_info.base_url,
             timeout=120.0,

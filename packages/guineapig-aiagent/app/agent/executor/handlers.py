@@ -16,6 +16,7 @@ import httpx
 
 from app.config import settings
 from app.core.log import logger
+from app.core.llm_clients import get_llm_client
 from app.services.rag_retrieval_service import retrieve_rag_context
 from app.services.handle_llmservice import get_llm_response
 from app.services.langfuse_client import get_langfuse, is_langfuse_enabled
@@ -91,9 +92,8 @@ class CapabilityHandlers:
             return {"error": "未指定知识库名称", "result": ""}
 
         try:
-            # 同步调用包装为 async
-            result = await asyncio.to_thread(
-                retrieve_rag_context,
+            # 同步调用包装为 async（内部 embedding/检索/重排均放入线程池）
+            result = await retrieve_rag_context(
                 rag_names=rag_names,
                 user_id=params.get("user_id", 0),
                 query=query,
@@ -130,9 +130,7 @@ class CapabilityHandlers:
             # 构建带 system prompt 的消息
             if system_prompt:
                 # 用完整的消息结构调用
-                from openai import OpenAI
-
-                client = OpenAI(
+                client = get_llm_client(
                     api_key=settings.LLM_API_KEY,
                     base_url=settings.LLM_BASE_URL,
                     timeout=120.0,

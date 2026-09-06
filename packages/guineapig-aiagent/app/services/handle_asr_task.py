@@ -44,7 +44,9 @@ def handle_asr_task(object_key: str) -> str:
     # Step 1: 下载音频
     os.makedirs(local_asr_dir, exist_ok=True)
     logger.info(f"[ASR Task] 从 S3 下载音频: {object_key}")
-    download_file_from_s3(object_key, local_audio_path)
+    success = download_file_from_s3(object_key, local_audio_path)
+    if not success:
+        raise RuntimeError(f"音频下载失败: {object_key}")
 
     # Step 2: ASR 识别
     logger.info(f"[ASR Task] 开始 ASR 识别: {local_audio_path}")

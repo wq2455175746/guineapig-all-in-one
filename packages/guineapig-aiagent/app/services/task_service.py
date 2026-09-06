@@ -62,7 +62,8 @@ def handler_task_submit(request: dict) -> JSONResponse:
         os.makedirs(local_asr_dir, exist_ok=True)
         if not os.path.exists(local_audio_path):
             logger.info(f"[Task] Step 1: 从 S3 下载音频: {object_key}")
-            download_file_from_s3(object_key, local_audio_path)
+            if not download_file_from_s3(object_key, local_audio_path):
+                return error_response(message=f"音频下载失败: {object_key}", code=500)
         else:
             logger.info(f"[Task] Step 1: 音频已存在本地: {local_audio_path}")
 

@@ -10,6 +10,34 @@ from app.services.rag_service import process_file_embedding, MilvusWriter
 
 router = APIRouter(prefix="/guineapig-aiagent/rag", tags=["rag"])
 
+# 后台嵌入任务集合：保留强引用避免被 GC，done 回调统一记录异常，关闭时统一取消
+_pending_embedding_tasks: set[asyncio.Task] = set()
+
+
+def _track_embedding_task(coro) -> asyncio.Task:
+    """创建并跟踪后台嵌入任务，异常统一记录，避免 fire-and-forget 泄漏。"""
+    task = asyncio.create_task(coro)
+    _pending_embedding_tasks.add(task)
+    task.add_done_callback(_on_embedding_task_done)
+    return task
+
+
+def _on_embedding_task_done(task: asyncio.Task):
+    _pending_embedding_tasks.discard(task)
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.error(f"[RAG] 嵌入后台任务异常: {exc!r}")
+
+
+def cancel_pending_embedding_tasks() -> None:
+    """服务关闭时取消所有未完成的后台嵌入任务。"""
+    tasks = list(_pending_embedding_tasks)
+    for task in tasks:
+        task.cancel()
+    _pending_embedding_tasks.clear()
+
 
 @router.post("/embed")
 async def embed_file(request: RagEmbedRequest):
@@ -24,7 +52,7 @@ async def embed_file(request: RagEmbedRequest):
     try:
         # 启动后台异步任务
         params = request.model_dump()
-        asyncio.create_task(_run_embedding_async(params))
+        _track_embedding_task(_run_embedding_async(params))
 
         return success_response(data={"task_id": request.task_id, "message": "embedding started"})
     except Exception as e:

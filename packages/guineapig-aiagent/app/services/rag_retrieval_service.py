@@ -3,6 +3,7 @@ RAG 检索服务 — Milvus 向量搜索 + Reranker 重排序 + 结果格式化
 用于 LLM Pipeline 中的 RAGRetrievalProcessor。
 """
 
+import asyncio
 import json
 from typing import Optional
 
@@ -10,6 +11,7 @@ import requests
 
 from app.config import settings
 from app.core.log import logger
+from app.core.milvus_clients import get_milvus_client
 
 
 class MilvusSearcher:
@@ -26,13 +28,8 @@ class MilvusSearcher:
         self.db_name = db_name
 
     def _create_client(self):
-        """创建 MilvusClient 实例"""
-        from pymilvus import MilvusClient
-
-        return MilvusClient(
-            uri=f"http://{self.host}:{self.port}",
-            db_name=self.db_name,
-        )
+        """获取 MilvusClient 实例（按线程缓存复用，避免每次新建连接）"""
+        return get_milvus_client(self.host, self.port, self.db_name)
 
     def search_collection(
         self,
@@ -104,13 +101,8 @@ class MilvusSearcher:
         启动时加载 Milvus 数据库中所有集合到内存。
         避免后续搜索时因集合未加载而查询不到数据。
         """
-        from pymilvus import MilvusClient
-
         try:
-            client = MilvusClient(
-                uri=f"http://{host}:{port}",
-                db_name=db_name,
-            )
+            client = get_milvus_client(host, port, db_name)
             collections = client.list_collections()
             if not collections:
                 logger.info(f"[RAG] Milvus 数据库 '{db_name}' 中没有集合需要加载")
@@ -237,7 +229,7 @@ class RerankerService:
         ]
 
 
-def retrieve_rag_context(
+async def retrieve_rag_context(
     rag_names: list[str],
     user_id: int,
     query: str,
@@ -270,22 +262,29 @@ def retrieve_rag_context(
         api_url=embedding_api_url,
         model_name=embedding_model_name,
     )
-    query_vector = embedder.get_embedding(query)
+    query_vector = await asyncio.to_thread(embedder.get_embedding, query)
     if not query_vector:
         logger.warning("[RAG] 查询向量化失败，跳过 RAG 检索")
         return ""
 
-    # 步骤 2: 搜索各集合
+    # 步骤 2: 并发搜索各集合（每个集合一个线程，MilvusClient 按线程缓存复用）
     searcher = MilvusSearcher(host=milvus_host, port=milvus_port)
     all_results = []
-    for name in rag_names:
-        results = searcher.search_collection(
-            collection_name=name,
-            query_embedding=query_vector,
-            user_id=user_id,
-            top_k=top_k,
+    if rag_names:
+        per_collection = await asyncio.gather(
+            *(
+                asyncio.to_thread(
+                    searcher.search_collection,
+                    collection_name=name,
+                    query_embedding=query_vector,
+                    user_id=user_id,
+                    top_k=top_k,
+                )
+                for name in rag_names
+            )
         )
-        all_results.extend(results)
+        for results in per_collection:
+            all_results.extend(results)
 
     if not all_results:
         logger.info("[RAG] Milvus 无搜索结果")
@@ -300,7 +299,7 @@ def retrieve_rag_context(
         api_key=reranker_api_key,
         model_name=reranker_model_name,
     )
-    reranked = reranker.rerank(query, documents, rerank_top_k)
+    reranked = await asyncio.to_thread(reranker.rerank, query, documents, rerank_top_k)
 
     logger.info(f"[RAG] 重排序完成: 返回 {len(reranked)} 条")
 

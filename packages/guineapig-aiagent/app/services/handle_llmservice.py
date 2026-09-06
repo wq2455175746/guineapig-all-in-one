@@ -7,10 +7,9 @@ LLM 原子能力 — 将文本发送到 DeepSeek 大模型获取回复
 
 from typing import AsyncGenerator
 
-from openai import AsyncOpenAI, OpenAI
-
 from app.config import settings
 from app.core.log import logger
+from app.core.llm_clients import get_async_llm_client, get_llm_client
 from app.services.langfuse_client import get_langfuse, is_langfuse_enabled
 
 _llm_client = None
@@ -18,7 +17,7 @@ _model_name = None
 
 
 def _ensure_llm_client():
-    """确保 LLM 客户端已初始化（惰性加载）"""
+    """确保 LLM 客户端已初始化（惰性加载，复用共享缓存）"""
     global _llm_client, _model_name
 
     if _llm_client is not None:
@@ -27,7 +26,7 @@ def _ensure_llm_client():
     if not settings.LLM_API_KEY:
         raise ValueError("LLM_API_KEY not set in .env")
 
-    _llm_client = OpenAI(
+    _llm_client = get_llm_client(
         api_key=settings.LLM_API_KEY,
         base_url=settings.LLM_BASE_URL,
         timeout=120.0,
@@ -127,7 +126,7 @@ async def get_llm_response_stream(
     Yields:
         逐 chunk 的文本内容
     """
-    client = AsyncOpenAI(api_key=api_key, base_url=base_url, timeout=120.0)
+    client = get_async_llm_client(api_key=api_key, base_url=base_url, timeout=120.0)
 
     logger.info(f"[LLM-Stream] 开始流式调用: model={model_name}, messages={len(messages)}")
 
