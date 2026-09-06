@@ -2,13 +2,18 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Response, Request
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+from starlette.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.core.log import logger
 from app.core.oss_wrapper_utils import cleanup_oss_client
 
 # 导入事件监听器以注册信号监听
-from app.middleware import ProcessTimeMiddleware, PrometheusMetricsMiddleware
+from app.middleware import (
+    AdminTokenAuthMiddleware,
+    ProcessTimeMiddleware,
+    PrometheusMetricsMiddleware,
+)
 from app.services.memory_scheduler_service import memory_scheduler
 from app.services.langfuse_client import init_langfuse, close_langfuse
 from app.services.otel_service import otel_service
@@ -66,9 +71,18 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# 添加中间件
+# 添加中间件（后添加者位于外层：CORS → Auth → Metrics → ProcessTime）
 app.add_middleware(ProcessTimeMiddleware)
 app.add_middleware(PrometheusMetricsMiddleware)
+app.add_middleware(AdminTokenAuthMiddleware)
+# CORS：dev 默认 ["*"]，prod 由 CORS_ORIGINS 环境变量（JSON 数组）收紧配置
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.CORS_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # 注册路由
 app.include_router(task.router)

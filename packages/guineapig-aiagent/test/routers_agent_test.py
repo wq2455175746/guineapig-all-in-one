@@ -12,6 +12,7 @@ from app.config import settings
 from app.main import app
 
 client = TestClient(app)
+client.headers.update({"X-Admin-Token": settings.ADMIN_TOKEN})
 BASE = "/guineapig-aiagent/agent"
 HAS_LLM = bool(settings.LLM_API_KEY)
 

@@ -53,10 +53,25 @@ uv run  gunicorn \
 ```
 
 
+## 接口鉴权
+所有业务接口（/guineapig-aiagent/* 及 /metrics）均需携带令牌，否则返回 401：
+- 请求头：`X-Admin-Token: <token>`，或 `Authorization: Bearer <token>`
+- 令牌配置：环境变量 `ADMIN_TOKEN`（dev 默认 `guineapig-admin-dev-token`）
+- 未配置 `ADMIN_TOKEN` 时 fail-closed：除白名单外所有接口拒绝访问
+- 白名单（无需鉴权）：`/health`、`/docs`、`/openapi.json`、`/redoc`
+
+## CORS
+- dev：默认 `["*"]`（允许所有来源）
+- prod：必须通过环境变量 `CORS_ORIGINS`（JSON 数组格式，如
+  `'["https://a.com","https://b.com"]'`）显式配置，不允许通配 `*`；
+  未配置时跨域访问将被拒绝（fail-closed）。
+
+
 ## 本地测试接口CURL
 ```
 curl -X POST http://localhost:8000/guineapig-aiagent/task/submit \
   -H "Content-Type: application/json" \
+  -H "X-Admin-Token: guineapig-admin-dev-token" \
   -d '{
     "sessionId": "session-t1",
     "taskId": "t1",

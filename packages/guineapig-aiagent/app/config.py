@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 from typing import List
@@ -22,6 +23,11 @@ class Settings(BaseSettings):
     SYNC_THREAD_COUNT: int | None = None
     # 安全配置
     SECRET_KEY: str = ""
+    # 管理后台访问令牌：从环境变量读取（X-Admin-Token / Authorization: Bearer）。
+    # 为空时鉴权中间件 fail-closed，拒绝除元数据白名单外的所有请求。
+    ADMIN_TOKEN: str = ""
+    # CORS 允许的来源：dev 默认 ["*"]，prod 必须通过环境变量 CORS_ORIGINS
+    # （JSON 数组格式，如 '["https://a.com","https://b.com"]'）显式配置，不允许通配。
     CORS_ORIGINS: List[str] = ["*"]
 
     # OSS对象存储配置
@@ -120,6 +126,23 @@ if not settings.OSS_AK or not settings.OSS_SK:
 if settings.ENV == "prod":
     settings.DEBUG = False
     settings.DOCS_ENABLED = False
-    settings.CORS_ORIGINS = [
-        "https://wanghg11.fastapidemo.local",
-    ]
+    # prod 下 CORS 不允许通配 *：来源必须通过环境变量 CORS_ORIGINS（JSON 数组）显式配置
+    if not settings.CORS_ORIGINS or settings.CORS_ORIGINS == ["*"]:
+        _cors_raw = os.getenv("CORS_ORIGINS", "").strip()
+        if _cors_raw:
+            # 合法 JSON 已由 pydantic-settings 校验解析；此处仅过滤掉通配符 *
+            settings.CORS_ORIGINS = [
+                origin for origin in json.loads(_cors_raw) if origin != "*"
+            ]
+        else:
+            settings.CORS_ORIGINS = []
+    if not settings.CORS_ORIGINS:
+        logging.getLogger("app.config").critical(
+            "prod 环境 CORS_ORIGINS 未配置，跨域访问将被拒绝（fail-closed）"
+        )
+    # prod 下 ADMIN_TOKEN 未配置 → 大声告警；鉴权中间件会对未配置的 token fail-closed，
+    # 除元数据白名单外的所有接口将返回 401
+    if not settings.ADMIN_TOKEN:
+        logging.getLogger("app.config").critical(
+            "ADMIN_TOKEN 未配置，生产环境除白名单外的所有接口将拒绝访问"
+        )

@@ -117,6 +117,7 @@ services:
       REDIS_PASSWORD: guineapig_dev
       REDIS_DB: 0
       MILVUS_HOST: ${MILVUS_HOST:-milvus-standalone}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-guineapig-admin-dev-token}
     volumes:
       - ./packages/guineapig-aiagent:/app
       - /app/.venv

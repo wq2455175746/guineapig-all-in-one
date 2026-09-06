@@ -124,6 +124,8 @@ services:
       LLM_API_KEY: ${LLM_API_KEY}
       LLM_BASE_URL: ${LLM_BASE_URL:-https://api.deepseek.com}
       LLM_MODEL_NAME: ${LLM_MODEL_NAME:-deepseek-chat}
+      ADMIN_TOKEN: ${ADMIN_TOKEN}
+      CORS_ORIGINS: ${CORS_ORIGINS}
       BACKEND_BASE_URL: http://backend:6880
     volumes:
       - guineapig-aiagent-data:/app/data

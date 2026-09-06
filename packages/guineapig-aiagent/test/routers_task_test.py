@@ -13,13 +13,16 @@ _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
+from app.config import settings
 from app.main import app
 
 
 @pytest.fixture
 def client():
-    """提供 FastAPI TestClient"""
-    return TestClient(app)
+    """提供 FastAPI TestClient（默认携带测试鉴权 token）"""
+    client = TestClient(app)
+    client.headers.update({"X-Admin-Token": settings.ADMIN_TOKEN})
+    return client
 
 
 class TestTaskRouter:

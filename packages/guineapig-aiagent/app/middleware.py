@@ -1,11 +1,14 @@
 # app/middleware.py
 
+import hmac
 import time
 
 from fastapi import Response, Request
+from fastapi.responses import JSONResponse
 from prometheus_client import Counter, Histogram, Gauge
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from app.config import settings
 from app.core.log import logger
 
 # 1. 定义进阶Prometheus指标
@@ -58,6 +61,44 @@ class PrometheusMetricsMiddleware(BaseHTTPMiddleware):
             http_request_duration_seconds.labels(endpoint=endpoint, method=method).observe(processing_time)
         
         return response
+
+
+class AdminTokenAuthMiddleware(BaseHTTPMiddleware):
+    """Token 鉴权中间件 — 保护除元数据白名单外的所有接口。
+
+    - 从 `X-Admin-Token` 或 `Authorization: Bearer <token>` 读取访问令牌
+    - 与 `settings.ADMIN_TOKEN` 做常量时间比较（hmac.compare_digest），不匹配返回 401
+    - `settings.ADMIN_TOKEN` 为空时 fail-closed：拒绝所有非白名单请求，
+      避免"未配置即裸奔"。生产环境启动时 config.py 会输出 CRITICAL 告警。
+    - dev 下同样生效：开发者需在 .env 中配置 ADMIN_TOKEN 才能调用接口
+    """
+
+    # 元数据端点白名单（无需鉴权，供健康检查 / API 文档使用）
+    ALLOWLIST_PATHS = {"/docs", "/openapi.json", "/redoc", "/health"}
+
+    async def dispatch(self, request: Request, call_next):
+        # 放行元数据端点（健康检查、API 文档）
+        if request.url.path in self.ALLOWLIST_PATHS:
+            return await call_next(request)
+
+        # 从 X-Admin-Token 或 Authorization: Bearer 读取 token
+        token = request.headers.get("X-Admin-Token", "")
+        if not token:
+            auth_header = request.headers.get("Authorization", "")
+            if auth_header.startswith("Bearer "):
+                token = auth_header[len("Bearer "):].strip()
+
+        expected = settings.ADMIN_TOKEN
+        # 未配置 token 或 token 不匹配 → 401（fail-closed）
+        if not expected or not token or not hmac.compare_digest(
+            token.encode("utf-8"), expected.encode("utf-8")
+        ):
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Unauthorized", "message": "无效或缺失的访问令牌"},
+            )
+
+        return await call_next(request)
 
 
 class ProcessTimeMiddleware(BaseHTTPMiddleware):
