@@ -1,10 +1,10 @@
 import json
 import logging
 import os
-from typing import List
+from typing import Annotated, List
 
-from pydantic import Field
-from pydantic_settings import BaseSettings
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, NoDecode
 
 
 class Settings(BaseSettings):
@@ -28,7 +28,20 @@ class Settings(BaseSettings):
     ADMIN_TOKEN: str = ""
     # CORS 允许的来源：dev 默认 ["*"]，prod 必须通过环境变量 CORS_ORIGINS
     # （JSON 数组格式，如 '["https://a.com","https://b.com"]'）显式配置，不允许通配。
-    CORS_ORIGINS: List[str] = ["*"]
+    # NoDecode 使环境变量以原始字符串交给 field_validator 处理，
+    # 否则 pydantic-settings 会对空串做 JSON 解码直接抛 SettingsError 导致启动失败。
+    CORS_ORIGINS: Annotated[List[str], NoDecode] = ["*"]
+
+    @field_validator("CORS_ORIGINS", mode="before")
+    @classmethod
+    def _cors_origins_parse(cls, v):
+        # 环境变量为空字符串（如 docker-compose 的 ${CORS_ORIGINS} 未设置）时视为未配置，
+        # 走 fail-closed 分支；否则按 JSON 数组解析
+        if v == "":
+            return []
+        if isinstance(v, str):
+            return json.loads(v)
+        return v
 
     # OSS对象存储配置
     OSS_AK: str = ""
@@ -126,16 +139,10 @@ if not settings.OSS_AK or not settings.OSS_SK:
 if settings.ENV == "prod":
     settings.DEBUG = False
     settings.DOCS_ENABLED = False
-    # prod 下 CORS 不允许通配 *：来源必须通过环境变量 CORS_ORIGINS（JSON 数组）显式配置
-    if not settings.CORS_ORIGINS or settings.CORS_ORIGINS == ["*"]:
-        _cors_raw = os.getenv("CORS_ORIGINS", "").strip()
-        if _cors_raw:
-            # 合法 JSON 已由 pydantic-settings 校验解析；此处仅过滤掉通配符 *
-            settings.CORS_ORIGINS = [
-                origin for origin in json.loads(_cors_raw) if origin != "*"
-            ]
-        else:
-            settings.CORS_ORIGINS = []
+    # prod 下 CORS 不允许通配 *：剥离混入列表的通配符；未显式配置任何来源时 fail-closed
+    settings.CORS_ORIGINS = [
+        origin for origin in settings.CORS_ORIGINS if origin != "*"
+    ]
     if not settings.CORS_ORIGINS:
         logging.getLogger("app.config").critical(
             "prod 环境 CORS_ORIGINS 未配置，跨域访问将被拒绝（fail-closed）"

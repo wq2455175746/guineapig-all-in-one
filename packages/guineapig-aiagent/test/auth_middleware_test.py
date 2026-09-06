@@ -81,7 +81,7 @@ class TestMetadataAllowlist:
     @pytest.mark.parametrize("path", ["/health", "/docs", "/openapi.json", "/redoc"])
     def test_allowlist_without_token(self, client, path):
         resp = client.get(path)
-        assert resp.status_code in (200, 404)
+        assert resp.status_code == 200
 
 
 class TestAgentControlProtected:
