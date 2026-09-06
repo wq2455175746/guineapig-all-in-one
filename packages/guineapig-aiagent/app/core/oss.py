@@ -636,7 +636,7 @@ class OSS:
                     self.s3_client.abort_multipart_upload(
                         Bucket=self.bucket_name, Key=remote_path, UploadId=upload_id
                     )
-                except:
+                except Exception:
                     pass
             return False
 
@@ -693,7 +693,7 @@ class OSS:
                     self.s3_client.abort_multipart_upload(
                         Bucket=self.bucket_name, Key=remote_path, UploadId=upload_id
                     )
-                except:
+                except Exception:
                     pass
             return False
 

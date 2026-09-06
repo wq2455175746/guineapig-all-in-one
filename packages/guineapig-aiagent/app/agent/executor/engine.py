@@ -633,7 +633,8 @@ class DAGExecutionEngine:
             start = datetime.fromisoformat(start_iso)
             now = datetime.now(timezone.utc)
             return int((now - start).total_seconds() * 1000)
-        except Exception:
+        except Exception as e:
+            logger.warning(f"[Engine] 解析 start_iso 失败，返回 0: {start_iso} ({e})")
             return 0
 
     def _elapsed_ms(self) -> int:

@@ -1,6 +1,8 @@
 import os
 import shutil
 
+from app.core.log import logger
+
 
 class FileUtils:
     """文件操作工具类，提供常用的文件和目录处理方法"""
@@ -19,7 +21,7 @@ class FileUtils:
             with open(path, "r", encoding="utf-8") as f:
                 return f.read()
         except Exception as e:
-            print(f"读取文件错误: {e}")
+            logger.error(f"读取文件错误: {e}")
             return ""
 
     @staticmethod
@@ -66,7 +68,7 @@ class FileUtils:
                 for line in f:
                     content.append(line.rstrip("\n"))
         except Exception as e:
-            print(f"读取文件内容错误: {e}")
+            logger.error(f"读取文件内容错误: {e}")
         return content
 
     @staticmethod
@@ -79,7 +81,7 @@ class FileUtils:
                         return line.rstrip("\n")
             return ""
         except Exception as e:
-            print(f"读取指定行错误: {e}")
+            logger.error(f"读取指定行错误: {e}")
             return ""
 
     @staticmethod
@@ -92,7 +94,7 @@ class FileUtils:
                     if begin_line <= i <= end_line:
                         content.append(line.rstrip("\n"))
         except Exception as e:
-            print(f"读取行范围错误: {e}")
+            logger.error(f"读取行范围错误: {e}")
         return content
 
     @staticmethod
@@ -128,7 +130,7 @@ class FileUtils:
 
             return "create" if is_new else "write"
         except Exception as e:
-            print(f"写入文件错误: {e}")
+            logger.error(f"写入文件错误: {e}")
             return ""
 
     @staticmethod
@@ -152,7 +154,7 @@ class FileUtils:
             if not os.path.exists(dir_path):
                 os.makedirs(dir_path, exist_ok=True)
         except Exception as e:
-            print(f"创建目录错误: {e}")
+            logger.error(f"创建目录错误: {e}")
 
     @staticmethod
     def is_file_exist(file_name: str) -> bool:
@@ -178,7 +180,7 @@ class FileUtils:
         try:
             shutil.copy2(src, dst)
         except Exception as e:
-            print(f"复制文件错误: {e}")
+            logger.error(f"复制文件错误: {e}")
             raise
 
 

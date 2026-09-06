@@ -344,7 +344,7 @@ async def _stream_execution_summary(
         格式化的 SSE content 事件字符串
     """
     try:
-        client, model_name = _get_llm_client()
+        _get_llm_client()
     except ValueError as e:
         logger.warning(f"[Agent-Summary] LLM 不可用: {e}")
         return
@@ -374,49 +374,23 @@ async def _stream_execution_summary(
 
     summary_input = system_prompt + human_prompt
     input_tokens = _estimate_tokens(summary_input)
-    output_text = ""
 
-    # ── Langfuse Generation Span (SDK v4: start_observation) ──
-    langfuse_gen = None
-    if is_langfuse_enabled():
-        langfuse = get_langfuse()
-        langfuse_gen = langfuse.start_observation(
-            name="stream-execution-summary",
-            as_type="generation",
-            trace_context={"trace_id": trace_id} if trace_id else None,
-            model=model_name,
-            input={"system": system_prompt[:200], "user": human_prompt[:500]},
-            metadata={"source": "agent._stream_execution_summary"},
-        )
-
-    try:
-        stream = await client.chat.completions.create(
-            model=model_name,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": human_prompt},
-            ],
-            temperature=0.3,
-            max_tokens=2048,
-            stream=True,
-        )
-
-        async for chunk in stream:
-            if (
-                chunk.choices
-                and chunk.choices[0].delta
-                and chunk.choices[0].delta.content
-            ):
-                content = chunk.choices[0].delta.content
-                output_text += content
-                data = _json_compact({"content": content})
-                yield f"event: content\ndata: {data}\n\n"
-    except Exception as e:
-        logger.error(f"[Agent-Summary] LLM 流式调用失败: {e}")
-    finally:
-        if langfuse_gen:
-            langfuse_gen.update(output=output_text)
-            langfuse_gen.end()
+    result = {"text": ""}
+    async for ev in _stream_llm_response(
+        system_prompt,
+        human_prompt,
+        temperature=0.3,
+        max_tokens=2048,
+        span_name="stream-execution-summary",
+        span_input={"system": system_prompt[:200], "user": human_prompt[:500]},
+        span_metadata={"source": "agent._stream_execution_summary"},
+        trace_id=trace_id,
+        error_log_level="error",
+        error_log_prefix="[Agent-Summary] LLM 流式调用失败: ",
+        result=result,
+    ):
+        yield ev
+    output_text = result["text"]
 
     # 上报总结 LLM 的 token 指标
     output_tokens = _estimate_tokens(output_text)
@@ -443,6 +417,105 @@ def _build_scene_memory_text(scene_memory: list[dict]) -> str:
     return "\n".join(lines)
 
 
+async def _stream_llm_response(
+    system_prompt: str,
+    human_prompt: str,
+    *,
+    temperature: float = 0.3,
+    max_tokens: int = 1024,
+    span_name: str,
+    span_input: dict | None = None,
+    span_metadata: dict | None = None,
+    trace_id: str | None = None,
+    fallback_text: str | None = None,
+    error_event_message: str | None = None,
+    error_log_level: str = "warning",
+    error_log_prefix: str = "LLM 流式调用失败: ",
+    result: dict | None = None,
+) -> AsyncGenerator[str, None]:
+    """统一的 LLM 流式回复封装：OpenAI 流式调用 + Langfuse generation span + SSE 事件。
+
+    逐块以 `event: content` 推送 LLM 输出。失败时按调用方需要采用三种模式：
+    - `fallback_text`: 输出该兜底文本作为 `event: content`（reject / dag-empty 路径）
+    - `error_event_message`: 输出 `event: error`（直接回复路径，模板中的 `{error}` 替换为异常）
+    - 两者皆空: 仅记录日志，不产出事件（总结路径）
+
+    LLM 客户端在本函数内获取，因此 `model_name` 在 Langfuse span 创建前必然已定义。
+
+    Args:
+        system_prompt / human_prompt: LLM 消息
+        temperature / max_tokens: 采样参数
+        span_name / span_input / span_metadata: Langfuse generation span 配置
+        trace_id: Langfuse trace 关联 ID
+        fallback_text: 失败兜底文本
+        error_event_message: 失败时 error 事件的 message 模板
+        error_log_level: 失败日志级别（warning / error）
+        error_log_prefix: 失败日志前缀
+        result: 消费完生成器后回传输出。`result["text"]` = 完整输出文本，
+            `result["input_tokens"]` = human_prompt 估算 token（仅在 LLM 可用时设置）
+
+    Yields:
+        SSE 事件字符串（event: content / event: error）
+    """
+    output_text = ""
+    langfuse_gen = None
+
+    try:
+        client, model_name = _get_llm_client()
+        if result is not None:
+            result["input_tokens"] = _estimate_tokens(human_prompt)
+
+        if is_langfuse_enabled():
+            langfuse = get_langfuse()
+            langfuse_gen = langfuse.start_observation(
+                name=span_name,
+                as_type="generation",
+                trace_context={"trace_id": trace_id} if trace_id else None,
+                model=model_name,
+                input=span_input,
+                metadata=span_metadata,
+            )
+
+        stream = await client.chat.completions.create(
+            model=model_name,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": human_prompt},
+            ],
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stream=True,
+        )
+        async for chunk in stream:
+            if (
+                chunk.choices
+                and chunk.choices[0].delta
+                and chunk.choices[0].delta.content
+            ):
+                content = chunk.choices[0].delta.content
+                output_text += content
+                data = _json_compact({"content": content})
+                yield f"event: content\ndata: {data}\n\n"
+    except Exception as e:
+        log_fn = getattr(logger, error_log_level, logger.warning)
+        log_fn(f"{error_log_prefix}{e}")
+        if fallback_text is not None:
+            output_text = fallback_text
+            data = _json_compact({"content": fallback_text})
+            yield f"event: content\ndata: {data}\n\n"
+        elif error_event_message is not None:
+            error_data = _json_compact(
+                {"message": error_event_message.format(error=e)}
+            )
+            yield f"event: error\ndata: {error_data}\n\n"
+    finally:
+        if langfuse_gen:
+            langfuse_gen.update(output=output_text)
+            langfuse_gen.end()
+        if result is not None:
+            result["text"] = output_text
+
+
 async def _direct_llm_stream(
     user_message: str,
     user_id: int = 0,
@@ -462,14 +535,13 @@ async def _direct_llm_stream(
         scene_memory: 场景记忆列表，注入 system prompt
     """
     input_tokens = _estimate_tokens(user_message) + extra_input_tokens
-    output_text = ""
 
     # 构建系统提示词（包含场景记忆）
     scene_text = _build_scene_memory_text(scene_memory or [])
     system_prompt = "你是一个友好的 AI 助手。" + scene_text
 
     try:
-        client, model_name = _get_llm_client()
+        _get_llm_client()
     except ValueError as e:
         logger.warning(f"[Agent-LLM] LLM 不可用: {e}")
         yield f"event: error\ndata: {_json_compact({'message': 'LLM 不可用'})}\n\n"
@@ -483,48 +555,23 @@ async def _direct_llm_stream(
             )
         return
 
-    # ── Langfuse Generation Span (流式) ──
-    langfuse_gen = None
-    if is_langfuse_enabled():
-        langfuse = get_langfuse()
-        langfuse_gen = langfuse.start_observation(
-            name="direct-llm-stream",
-            as_type="generation",
-            trace_context={"trace_id": trace_id} if trace_id else None,
-            model=model_name,
-            input={"system": system_prompt[:200], "user": user_message[:500]},
-            metadata={"source": "agent._direct_llm_stream"},
-        )
-
-    try:
-        stream = await client.chat.completions.create(
-            model=model_name,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_message},
-            ],
-            temperature=0.7,
-            max_tokens=2048,
-            stream=True,
-        )
-        async for chunk in stream:
-            if (
-                chunk.choices
-                and chunk.choices[0].delta
-                and chunk.choices[0].delta.content
-            ):
-                content = chunk.choices[0].delta.content
-                output_text += content
-                data = _json_compact({"content": content})
-                yield f"event: content\ndata: {data}\n\n"
-    except Exception as e:
-        logger.error(f"[Agent-LLM] 直接回复流式调用失败: {e}")
-        error_data = _json_compact({"message": f"LLM 调用失败: {e}"})
-        yield f"event: error\ndata: {error_data}\n\n"
-    finally:
-        if langfuse_gen:
-            langfuse_gen.update(output=output_text)
-            langfuse_gen.end()
+    result = {"text": ""}
+    async for ev in _stream_llm_response(
+        system_prompt,
+        user_message,
+        temperature=0.7,
+        max_tokens=2048,
+        span_name="direct-llm-stream",
+        span_input={"system": system_prompt[:200], "user": user_message[:500]},
+        span_metadata={"source": "agent._direct_llm_stream"},
+        trace_id=trace_id,
+        error_event_message="LLM 调用失败: {error}",
+        error_log_level="error",
+        error_log_prefix="[Agent-LLM] 直接回复流式调用失败: ",
+        result=result,
+    ):
+        yield ev
+    output_text = result["text"]
 
     # 流结束后上报指标（不在 finally 中，避免 GeneratorExit 时 yield 异常）
     output_tokens = _estimate_tokens(output_text)
@@ -684,8 +731,6 @@ async def agent_chat_stream(request: AgentChatRequest):
                     )
                     reject_input_tokens = _estimate_tokens(reject_input)
 
-                    output_text = ""
-
                     # 1. rejected 事件（通知前端关闭 HITL）
                     rejected_data = _json_compact(
                         {
@@ -696,55 +741,27 @@ async def agent_chat_stream(request: AgentChatRequest):
                     yield f"event: rejected\ndata: {rejected_data}\n\n"
 
                     # 2. LLM 生成自然语言拒绝说明
-                    langfuse_gen = None
-                    if is_langfuse_enabled():
-                        langfuse = get_langfuse()
-                        langfuse_gen = langfuse.start_observation(
-                            name="reject-llm-stream",
-                            as_type="generation",
-                            trace_context={"trace_id": trace_id} if trace_id else None,
-                            model=model_name,
-                            input={
-                                "reject_reason": decision.reason,
-                                "user_message": message,
-                            },
-                            metadata={"source": "agent.reject_event_stream"},
-                        )
-                    try:
-                        client, model_name = _get_llm_client()
-                        stream = await client.chat.completions.create(
-                            model=model_name,
-                            messages=[
-                                {
-                                    "role": "system",
-                                    "content": "你是一个 AI 助手。用户请求你执行一项任务，但你无法完成。请用自然语言、友好的语气告诉用户为什么无法执行。回答紧凑简洁，不要有多余空行和空格。",
-                                },
-                                {"role": "user", "content": reject_input},
-                            ],
-                            temperature=0.3,
-                            max_tokens=512,
-                            stream=True,
-                        )
-                        async for chunk in stream:
-                            if (
-                                chunk.choices
-                                and chunk.choices[0].delta
-                                and chunk.choices[0].delta.content
-                            ):
-                                content = chunk.choices[0].delta.content
-                                output_text += content
-                                data = _json_compact({"content": content})
-                                yield f"event: content\ndata: {data}\n\n"
-                    except Exception as e:
-                        logger.warning(f"[Agent] Reject LLM 失败: {e}")
-                        fallback = f"抱歉，我无法执行此任务。{decision.reason}"
-                        output_text = fallback
-                        data = _json_compact({"content": fallback})
-                        yield f"event: content\ndata: {data}\n\n"
-                    finally:
-                        if langfuse_gen:
-                            langfuse_gen.update(output=output_text)
-                            langfuse_gen.end()
+                    fallback = f"抱歉，我无法执行此任务。{decision.reason}"
+                    result = {"text": ""}
+                    async for ev in _stream_llm_response(
+                        "你是一个 AI 助手。用户请求你执行一项任务，但你无法完成。请用自然语言、友好的语气告诉用户为什么无法执行。回答紧凑简洁，不要有多余空行和空格。",
+                        reject_input,
+                        temperature=0.3,
+                        max_tokens=512,
+                        span_name="reject-llm-stream",
+                        span_input={
+                            "reject_reason": decision.reason,
+                            "user_message": message,
+                        },
+                        span_metadata={"source": "agent.reject_event_stream"},
+                        trace_id=trace_id,
+                        fallback_text=fallback,
+                        error_log_level="warning",
+                        error_log_prefix="[Agent] Reject LLM 失败: ",
+                        result=result,
+                    ):
+                        yield ev
+                    output_text = result["text"]
 
                     # 3. execution_complete
                     complete_data = _json_compact(
@@ -819,55 +836,28 @@ async def agent_chat_stream(request: AgentChatRequest):
                         + scene_text
                     )
 
-                    langfuse_gen = None
-                    if is_langfuse_enabled():
-                        langfuse = get_langfuse()
-                        langfuse_gen = langfuse.start_observation(
-                            name="dag-empty-llm-stream",
-                            as_type="generation",
-                            trace_context={"trace_id": trace_id} if trace_id else None,
-                            model=model_name,
-                            input={
-                                "system": system_prompt[:200],
-                                "user_message": message,
-                            },
-                            metadata={"source": "agent.dag_empty_stream"},
-                        )
-                    try:
-                        client, model_name = _get_llm_client()
-                        llm_input_tokens = _estimate_tokens(message)
-                        stream = await client.chat.completions.create(
-                            model=model_name,
-                            messages=[
-                                {"role": "system", "content": system_prompt},
-                                {"role": "user", "content": message},
-                            ],
-                            temperature=0.3,
-                            max_tokens=1024,
-                            stream=True,
-                        )
-                        async for chunk in stream:
-                            if (
-                                chunk.choices
-                                and chunk.choices[0].delta
-                                and chunk.choices[0].delta.content
-                            ):
-                                content = chunk.choices[0].delta.content
-                                output_text += content
-                                data = _json_compact({"content": content})
-                                yield f"event: content\ndata: {data}\n\n"
-                    except Exception as e:
-                        logger.warning(
-                            f"[Agent-Stream] DAG-empty LLM 流式调用失败: {e}"
-                        )
-                        fallback = "抱歉，我无法为你的请求生成自动化执行计划，但我可以尝试以普通对话方式回答你的问题。请重发一次消息，取消 Agent 模式即可。"
-                        output_text = fallback
-                        data = _json_compact({"content": fallback})
-                        yield f"event: content\ndata: {data}\n\n"
-                    finally:
-                        if langfuse_gen:
-                            langfuse_gen.update(output=output_text)
-                            langfuse_gen.end()
+                    fallback = "抱歉，我无法为你的请求生成自动化执行计划，但我可以尝试以普通对话方式回答你的问题。请重发一次消息，取消 Agent 模式即可。"
+                    result = {"text": "", "input_tokens": 0}
+                    async for ev in _stream_llm_response(
+                        system_prompt,
+                        message,
+                        temperature=0.3,
+                        max_tokens=1024,
+                        span_name="dag-empty-llm-stream",
+                        span_input={
+                            "system": system_prompt[:200],
+                            "user_message": message,
+                        },
+                        span_metadata={"source": "agent.dag_empty_stream"},
+                        trace_id=trace_id,
+                        fallback_text=fallback,
+                        error_log_level="warning",
+                        error_log_prefix="[Agent-Stream] DAG-empty LLM 流式调用失败: ",
+                        result=result,
+                    ):
+                        yield ev
+                    output_text = result["text"]
+                    llm_input_tokens = result["input_tokens"]
 
                     # 3. execution_complete
                     complete_data = _json_compact(
