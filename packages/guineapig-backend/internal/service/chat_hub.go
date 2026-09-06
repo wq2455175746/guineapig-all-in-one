@@ -106,21 +106,27 @@ func (h *Hub) Register(client *ClientConnection) {
 	h.clients[client.UserID] = client
 }
 
-// Unregister 注销客户端 WS 连接
-func (h *Hub) Unregister(userID int64) {
-	h.mu.Lock()
-	if client, ok := h.clients[userID]; ok {
-		delete(h.clients, userID)
-		client.Close()
+// Unregister 注销指定的客户端 WS 连接。
+// 仅当该连接仍是该用户当前注册的连接时才移除并取消其会话流，
+// 避免旧连接（已被新连接替换）退出时误杀新连接。
+func (h *Hub) Unregister(client *ClientConnection) {
+	if client == nil {
+		return
 	}
+	userID := client.UserID
 
-	// 只取消该用户自己会话的活跃 AiAgent 连接，不影响其他用户的流
 	var cancels []context.CancelFunc
-	for convID, conn := range h.aiAgentConns {
-		if conn.UserID == userID {
-			delete(h.aiAgentConns, convID)
-			if conn.Cancel != nil {
-				cancels = append(cancels, conn.Cancel)
+	h.mu.Lock()
+	if cur, ok := h.clients[userID]; ok && cur == client {
+		delete(h.clients, userID)
+
+		// 只取消该用户自己会话的活跃 AiAgent 连接，不影响其他用户的流
+		for convID, conn := range h.aiAgentConns {
+			if conn.UserID == userID {
+				delete(h.aiAgentConns, convID)
+				if conn.Cancel != nil {
+					cancels = append(cancels, conn.Cancel)
+				}
 			}
 		}
 	}
@@ -129,13 +135,14 @@ func (h *Hub) Unregister(userID int64) {
 	for _, cancel := range cancels {
 		cancel()
 	}
+	// 幂等：可能已在 Register 替换旧连接时调用过 Close
+	client.Close()
 }
 
 // readPump 从 WS 读取消息（每客户端一个 goroutine）
 func (h *Hub) readPump(client *ClientConnection) {
 	defer func() {
-		h.Unregister(client.UserID)
-		client.Conn.Close()
+		h.Unregister(client)
 	}()
 
 	client.Conn.SetReadLimit(WSMaxMessageSize)

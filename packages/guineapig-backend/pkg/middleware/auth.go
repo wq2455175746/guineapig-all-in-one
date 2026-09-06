@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"crypto/subtle"
 	"net/http"
 	"strings"
 
@@ -81,7 +82,7 @@ func Auth() echo.MiddlewareFunc {
 				if adminToken == "" {
 					return authErr("管理后台 Token 未配置")
 				}
-				if token != adminToken {
+				if subtle.ConstantTimeCompare([]byte(token), []byte(adminToken)) != 1 {
 					return authErr("管理后台 Token 无效")
 				}
 				c.Set(ContextRoleKey, RoleAdmin)
@@ -97,7 +98,7 @@ func Auth() echo.MiddlewareFunc {
 				if innerToken == "" {
 					return authErr("内部服务 Token 未配置")
 				}
-				if token != innerToken {
+				if subtle.ConstantTimeCompare([]byte(token), []byte(innerToken)) != 1 {
 					return authErr("内部服务 Token 无效")
 				}
 				c.Set(ContextRoleKey, RoleInner)
