@@ -16,13 +16,13 @@ from app.core.log import logger
 from app.core.oss_wrapper_utils import download_file_from_s3
 from app.schemas.llm_models import SkillInfo
 from app.services.langfuse_client import get_langfuse, is_langfuse_enabled
+from app.services.zip_utils import extract_zip_safe
 
 from openai import AsyncOpenAI
 
 # 匹配 <commands>[JSON 数组]</commands>
 COMMANDS_PATTERN = re.compile(
-    r'<commands>\s*(\[[\s\S]*?\])\s*</commands>',
-    re.IGNORECASE
+    r"<commands>\s*(\[[\s\S]*?\])\s*</commands>", re.IGNORECASE
 )
 
 
@@ -75,7 +75,10 @@ async def select_relevant_skills(
             as_type="generation",
             trace_context=trace_ctx,
             model=model,
-            input={"system": messages[0]["content"][:200], "user": messages[1]["content"][:500]},
+            input={
+                "system": messages[0]["content"][:200],
+                "user": messages[1]["content"][:500],
+            },
             metadata={"source": "skill_load_service.select_relevant_skills"},
         )
 
@@ -106,7 +109,7 @@ async def select_relevant_skills(
         langfuse_gen.end()
     # 尝试从响应中提取 JSON 数组
     try:
-        match = re.search(r'\[.*?\]', text, re.DOTALL)
+        match = re.search(r"\[.*?\]", text, re.DOTALL)
         if match:
             result = json.loads(match.group(0))
             return [name for name in result if isinstance(name, str)]
@@ -151,25 +154,7 @@ def _ensure_skill_extracted(skill: SkillInfo, user_id: int) -> str:
         os.makedirs(skill_dir, exist_ok=True)
 
         with zipfile.ZipFile(local_zip_path, "r") as zf:
-            all_files = [f for f in zf.infolist() if not f.filename.endswith("/")]
-
-            # 检测公共顶层目录
-            common_prefix = None
-            if all_files:
-                first_slash = all_files[0].filename.find("/")
-                if first_slash != -1:
-                    candidate = all_files[0].filename[: first_slash + 1]
-                    if all(f.filename.startswith(candidate) for f in all_files):
-                        common_prefix = candidate
-
-            for info in all_files:
-                member_path = info.filename
-                if common_prefix and member_path.startswith(common_prefix):
-                    member_path = member_path[len(common_prefix):]
-                target_path = os.path.join(skill_dir, member_path)
-                os.makedirs(os.path.dirname(target_path), exist_ok=True)
-                with zf.open(info) as source, open(target_path, "wb") as target:
-                    target.write(source.read())
+            extract_zip_safe(zf, skill_dir)
 
         logger.info(f"[SkillLoad] Extracted to: {skill_dir}")
 
@@ -195,7 +180,7 @@ def _read_skill_context(skill_dir: str) -> str:
         if content.startswith("---"):
             end = content.find("---", 3)
             if end != -1:
-                content = content[end + 3:].strip()
+                content = content[end + 3 :].strip()
         parts.append(f"### Description\n{content[:2000]}")
     else:
         parts.append("### Description\n(No SKILL.md found)")
@@ -287,7 +272,9 @@ def inject_skill_system_prompt(
     )
 
     if skill_context:
-        skill_block = f"\n\n## Available Skills\n{skill_context}\n{commands_instruction}"
+        skill_block = (
+            f"\n\n## Available Skills\n{skill_context}\n{commands_instruction}"
+        )
     else:
         skill_block = f"\n\n{commands_instruction}"
 
@@ -320,16 +307,20 @@ def parse_commands(full_content: str) -> tuple[str, list[dict]]:
         valid = []
         for cmd in commands_data:
             if all(k in cmd for k in ("type", "description", "command", "risk")):
-                valid.append({
-                    "type": cmd["type"],
-                    "description": cmd["description"],
-                    "command": cmd["command"],
-                    "cwd": cmd.get("cwd", ""),
-                    "risk": cmd["risk"],
-                })
+                valid.append(
+                    {
+                        "type": cmd["type"],
+                        "description": cmd["description"],
+                        "command": cmd["command"],
+                        "cwd": cmd.get("cwd", ""),
+                        "risk": cmd["risk"],
+                    }
+                )
         commands = valid
     except (json.JSONDecodeError, ValueError):
-        logger.warning(f"[SkillLoad] Commands parse failed, content: {full_content[-200:]}")
+        logger.warning(
+            f"[SkillLoad] Commands parse failed, content: {full_content[-200:]}"
+        )
         return full_content, []
 
     clean_content = COMMANDS_PATTERN.sub("", full_content).strip()

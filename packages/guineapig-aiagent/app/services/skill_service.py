@@ -11,6 +11,7 @@ import shutil
 from app.config import settings
 from app.core.log import logger
 from app.core.oss_wrapper_utils import download_file_from_s3
+from app.services.zip_utils import extract_zip_safe
 
 
 def process_skill_zip(object_key: str) -> dict:
@@ -67,39 +68,13 @@ def process_skill_zip(object_key: str) -> dict:
             "assets": [],
             "others": [],
         }
-        total_size = 0
-        file_count = 0
 
         with zipfile.ZipFile(local_zip_path, "r") as zf:
-            # 检测 zip 内所有文件是否共享一个公共顶级目录（如 skill-name/xxx）
-            all_entries = [
-                info for info in zf.infolist() if not info.filename.endswith("/")
-            ]
-            common_prefix = None
-            if all_entries:
-                first_slash = all_entries[0].filename.find("/")
-                if first_slash != -1:
-                    candidate = all_entries[0].filename[: first_slash + 1]
-                    if all(e.filename.startswith(candidate) for e in all_entries):
-                        common_prefix = candidate
+            # 安全解压：自动处理公共顶层目录，拒绝路径穿越，限制大小与条目数
+            extracted, total_size = extract_zip_safe(zf, extract_dir)
 
-            for info in zf.infolist():
-                if info.filename.endswith("/"):
-                    continue  # 跳过目录
-
-                # 如果 zip 内有公共顶层目录，解压时去掉这层
-                member_path = info.filename
-                if common_prefix and member_path.startswith(common_prefix):
-                    member_path = member_path[len(common_prefix) :]
-
-                target_path = os.path.join(extract_dir, member_path)
-                os.makedirs(os.path.dirname(target_path), exist_ok=True)
-                with zf.open(info) as source, open(target_path, "wb") as target:
-                    target.write(source.read())
-
-                file_count += 1
-                total_size += info.file_size
-
+            file_count = len(extracted)
+            for _, member_path in extracted:
                 # 分类文件（使用去掉公共前缀后的相对路径）
                 ext = os.path.splitext(member_path)[1].lower()
                 name_lower = member_path.lower()

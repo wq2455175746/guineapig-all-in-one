@@ -17,12 +17,13 @@ async def search_web(query: str, max_results: int = 5) -> str:
         logger.warning("[NetworkSearch] SEARXNG_URL 未配置")
         return ""
 
-    search_url = f"{settings.SEARXNG_URL}/search?q={query}&format=json&language=zh"
+    search_url = f"{settings.SEARXNG_URL}/search"
+    params = {"q": query, "format": "json", "language": "zh"}
     logger.info(f"[NetworkSearch] 搜索: {query[:80]}...")
 
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.get(search_url)
+            resp = await client.get(search_url, params=params)
             resp.raise_for_status()
             data = resp.json()
     except Exception as e:

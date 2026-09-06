@@ -290,7 +290,7 @@ class OSS:
 
         try:
             self.s3_client.put_object(
-                Bucket=self.bucket_name, Key=folder_path, ACL="public-read"
+                Bucket=self.bucket_name, Key=folder_path
             )
             logger.info(f"文件夹创建成功: '{folder_path}'")
             return True
@@ -424,7 +424,6 @@ class OSS:
             Params={"Bucket": self.bucket_name, "Key": object_name},
             ExpiresIn=expires,
         )
-        result_url = result_url.split("?")[0]
         return result_url
 
     def upload_doc_to_s3_and_get_path(
@@ -557,7 +556,6 @@ class OSS:
                     Key=remote_path,
                     Body=file_data.read(),
                     ContentType="application/octet-stream",
-                    ACL="public-read"
                 )
             logger.info(f"小文件上传成功: {local_file_path} -> {self.bucket_name}/{remote_path}")
             return True
@@ -578,7 +576,6 @@ class OSS:
                 Key=remote_path,
                 Body=file_obj.read() if hasattr(file_obj, 'read') else file_obj,
                 ContentType="application/octet-stream",
-                ACL="public-read"
             )
             logger.info(f"小文件对象上传成功: {self.bucket_name}/{remote_path}")
             return True

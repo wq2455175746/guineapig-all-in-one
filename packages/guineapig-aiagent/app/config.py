@@ -1,3 +1,4 @@
+import logging
 import os
 from typing import List
 
@@ -20,12 +21,12 @@ class Settings(BaseSettings):
     PROJ_LOG_LEVEL: str = "INFO"
     SYNC_THREAD_COUNT: int | None = None
     # 安全配置
-    SECRET_KEY: str = "your-secret-key-change-in-production"
+    SECRET_KEY: str = ""
     CORS_ORIGINS: List[str] = ["*"]
 
     # OSS对象存储配置
-    OSS_AK: str = "xxxx"
-    OSS_SK: str = "xxxx"
+    OSS_AK: str = ""
+    OSS_SK: str = ""
     OSS_ENDPOINT: str = "http://localhost:29000"
     OSS_BUCKET: str = "guineapig"
     OSS_IS_ADDRESSING_STYLE: bool = False
@@ -104,6 +105,16 @@ if settings.SYNC_THREAD_COUNT is None:
 else:
     # 使用用户指定的线程数，但不超过32
     settings.SYNC_THREAD_COUNT = min(int(settings.SYNC_THREAD_COUNT), 32)
+
+# 凭据校验：检测未配置的敏感凭据，避免静默使用空值/占位值
+if not settings.SECRET_KEY:
+    logging.getLogger("app.config").warning(
+        "SECRET_KEY 未配置，请通过环境变量或 .env 文件设置"
+    )
+if not settings.OSS_AK or not settings.OSS_SK:
+    logging.getLogger("app.config").warning(
+        "OSS_AK / OSS_SK 未配置，OSS 上传/下载功能将不可用"
+    )
 
 # 根据环境动态调整配置
 if settings.ENV == "prod":
