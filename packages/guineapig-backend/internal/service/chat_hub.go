@@ -657,7 +657,7 @@ func (h *Hub) handleCommandResult(client *ClientConnection, env *response.WSEnve
 	// 5. 构建 LLM 上下文（不含当前轮结果）
 	llmMessages, err := buildLLMMessages(aiCtx, conversation)
 	if err != nil {
-		_ = updateMessageStatus(aiCtx, assistantMsgID, "error", fmt.Sprintf("构建上下文失败: %v", err))
+		_ = updateMessageStatus(writeCtx, assistantMsgID, "error", fmt.Sprintf("构建上下文失败: %v", err))
 		h.sendError(client, fmt.Sprintf("构建上下文失败: %v", err))
 		return
 	}
@@ -668,7 +668,7 @@ func (h *Hub) handleCommandResult(client *ClientConnection, env *response.WSEnve
 	// 7. 加载模型配置
 	modelConfig, err := loadModelConfig(aiCtx, conversation.ModelId, client.UserID)
 	if err != nil {
-		_ = updateMessageStatus(aiCtx, assistantMsgID, "error", fmt.Sprintf("加载模型配置失败: %v", err))
+		_ = updateMessageStatus(writeCtx, assistantMsgID, "error", fmt.Sprintf("加载模型配置失败: %v", err))
 		h.sendError(client, fmt.Sprintf("加载模型配置失败: %v", err))
 		return
 	}
