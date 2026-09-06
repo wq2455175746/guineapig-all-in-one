@@ -45,16 +45,41 @@ type Hub struct {
 }
 
 type ClientConnection struct {
-	UserID   int64
-	Conn     *websocket.Conn
-	Send     chan []byte
-	hub      *Hub
+	UserID int64
+	Conn   *websocket.Conn
+	Send   chan []byte
+	hub    *Hub
+
+	done chan struct{} // 连接终止信号，writePump / sendToClient 据此退出或丢弃
+	once sync.Once     // 保证 done 只关闭一次
 }
 
 type AiAgentConn struct {
 	ConversationID int64
 	MessageID      int64
+	UserID         int64 // 归属用户，Unregister 时只取消该用户自己的会话流
 	Cancel         context.CancelFunc
+}
+
+func newClientConnection(h *Hub, conn *websocket.Conn, userID int64) *ClientConnection {
+	return &ClientConnection{
+		UserID: userID,
+		Conn:   conn,
+		Send:   make(chan []byte, 256),
+		hub:    h,
+		done:   make(chan struct{}),
+	}
+}
+
+// Close 终止连接：只关闭 done 信号，绝不关闭 Send channel。
+// 此后 sendToClient 会自动丢弃消息，writePump 正常退出，避免向已关闭 channel 写导致的 panic。
+func (c *ClientConnection) Close() {
+	c.once.Do(func() {
+		close(c.done)
+	})
+	if c.Conn != nil {
+		_ = c.Conn.Close()
+	}
 }
 
 func GetHub() *Hub {
@@ -74,10 +99,9 @@ func (h *Hub) Register(client *ClientConnection) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	// 如果已有该用户的旧连接，关闭旧连接
+	// 如果已有该用户的旧连接，优雅关闭旧连接（不 close 其 Send，避免写 panic）
 	if old, ok := h.clients[client.UserID]; ok {
-		close(old.Send)
-		old.Conn.Close()
+		old.Close()
 	}
 	h.clients[client.UserID] = client
 }
@@ -85,24 +109,25 @@ func (h *Hub) Register(client *ClientConnection) {
 // Unregister 注销客户端 WS 连接
 func (h *Hub) Unregister(userID int64) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-
 	if client, ok := h.clients[userID]; ok {
-		close(client.Send)
 		delete(h.clients, userID)
+		client.Close()
 	}
 
-	// 清理该用户的所有活跃 AiAgent 连接
+	// 只取消该用户自己会话的活跃 AiAgent 连接，不影响其他用户的流
+	var cancels []context.CancelFunc
 	for convID, conn := range h.aiAgentConns {
-		if _, ok := h.clients[userID]; !ok {
-			// 检查该 AiAgentConn 是否属于当前用户的会话
-			// 这里简化处理：遍历时如果 client 不存在对应 aiAgentConn 则清理
-			_ = convID
-			if conn.Cancel != nil {
-				conn.Cancel()
-			}
+		if conn.UserID == userID {
 			delete(h.aiAgentConns, convID)
+			if conn.Cancel != nil {
+				cancels = append(cancels, conn.Cancel)
+			}
 		}
+	}
+	h.mu.Unlock()
+
+	for _, cancel := range cancels {
+		cancel()
 	}
 }
 
@@ -143,6 +168,8 @@ func (h *Hub) writePump(client *ClientConnection) {
 
 	for {
 		select {
+		case <-client.done:
+			return
 		case message, ok := <-client.Send:
 			client.Conn.SetWriteDeadline(time.Now().Add(WSWriteWait))
 			if !ok {
@@ -216,6 +243,8 @@ func (h *Hub) handleChatSend(client *ClientConnection, env *response.WSEnvelope)
 	}
 
 	// 2. 创建/获取会话 + 用户消息（复用 service/chat.go 的 SendChatMessage）
+	//    以 WS 连接鉴权身份覆盖 payload 中的 userId，杜绝 WS 侧伪造他人 userId
+	req.UserId = client.UserID
 	msgResp, err := SendChatMessage(ctx, req)
 	if err != nil {
 		h.sendError(client, fmt.Sprintf("创建消息失败: %v", err))
@@ -247,6 +276,12 @@ func (h *Hub) handleChatSend(client *ClientConnection, env *response.WSEnvelope)
 
 // streamAssistantReply 异步执行 LLM 流式调用，结果通过 WS 推送
 func (h *Hub) streamAssistantReply(ctx context.Context, client *ClientConnection, req *request.ChatSendRequest, msgResp *response.ChatMessageResponse) {
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Errorf("[Hub] streamAssistantReply panic: user_id=%d, err=%v", client.UserID, r)
+		}
+	}()
+
 	convID := msgResp.ConversationId
 
 	// 1. 加载会话
@@ -307,6 +342,7 @@ func (h *Hub) streamAssistantReply(ctx context.Context, client *ClientConnection
 	aiAgentConn := &AiAgentConn{
 		ConversationID: convID,
 		MessageID:      assistantMsgID,
+		UserID:         client.UserID,
 		Cancel:         cancel,
 	}
 	h.mu.Lock()
@@ -533,6 +569,11 @@ func (h *Hub) handleCommandResult(client *ClientConnection, env *response.WSEnve
 		h.sendError(client, "会话不存在")
 		return
 	}
+	// 会话属主校验，杜绝 WS 侧伪造他人会话
+	if conversation.UserId != client.UserID {
+		h.sendError(client, "无权操作该会话")
+		return
+	}
 
 	// 3. 创建新 assistant 占位消息（新的 message_id）
 	assistantMsg := &model.ChatMessage{
@@ -601,6 +642,7 @@ func (h *Hub) handleCommandResult(client *ClientConnection, env *response.WSEnve
 	aiAgentConn := &AiAgentConn{
 		ConversationID: convID,
 		MessageID:      assistantMsgID,
+		UserID:         client.UserID,
 		Cancel:         cancel,
 	}
 	h.mu.Lock()
@@ -676,10 +718,13 @@ func (h *Hub) handleCancel(client *ClientConnection, env *response.WSEnvelope) {
 
 	h.mu.Lock()
 	if conn, ok := h.aiAgentConns[convID]; ok {
-		if conn.Cancel != nil {
-			conn.Cancel()
+		// 只允许取消自己会话的流
+		if conn.UserID == client.UserID {
+			if conn.Cancel != nil {
+				conn.Cancel()
+			}
+			delete(h.aiAgentConns, convID)
 		}
-		delete(h.aiAgentConns, convID)
 	}
 	h.mu.Unlock()
 }
@@ -688,12 +733,7 @@ func (h *Hub) handleCancel(client *ClientConnection, env *response.WSEnvelope) {
 
 // ServeWS 处理完整的 WS 连接生命周期：注册 → readPump/writePump → 注销
 func (h *Hub) ServeWS(conn *websocket.Conn, userID int64) {
-	client := &ClientConnection{
-		UserID: userID,
-		Conn:   conn,
-		Send:   make(chan []byte, 256),
-		hub:    h,
-	}
+	client := newClientConnection(h, conn, userID)
 
 	h.Register(client)
 
@@ -702,14 +742,26 @@ func (h *Hub) ServeWS(conn *websocket.Conn, userID int64) {
 
 	go func() {
 		defer wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Errorf("[Hub] writePump panic: user_id=%d, err=%v", userID, r)
+			}
+		}()
 		h.writePump(client)
 	}()
 	go func() {
 		defer wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Errorf("[Hub] readPump panic: user_id=%d, err=%v", userID, r)
+			}
+		}()
 		h.readPump(client)
 	}()
 
 	wg.Wait()
+	// 双方泵退出后确保连接资源释放
+	client.Close()
 }
 
 // ========== 辅助 ==========
@@ -721,11 +773,14 @@ func (h *Hub) sendToClient(client *ClientConnection, env *response.WSEnvelope) {
 		return
 	}
 
-	// 阻塞发送，超时 10s；防止缓冲区满时静默丢消息
+	// 阻塞发送，超时 10s；防止缓冲区满时静默丢消息。
+	// 连接已关闭（done）时直接丢弃，不再写入，避免向已关闭 channel 发送 panic。
 	timer := time.NewTimer(10 * time.Second)
 	defer timer.Stop()
 
 	select {
+	case <-client.done:
+		return
 	case client.Send <- data:
 	case <-timer.C:
 		logger.Errorf("[Hub] 客户端发送缓冲区满(超时10s): user_id=%d, msg_type=%s", client.UserID, env.Type)

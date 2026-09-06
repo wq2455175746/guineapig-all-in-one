@@ -25,7 +25,7 @@ func SetupRedis(conf config.Redis) {
 		panic(fmt.Sprintf("连接 Redis 失败: %v", err))
 	}
 	// 预期输出: PONG
-	logger.Infof("Redis 连接成功:" + pong)
+	logger.Infof("Redis 连接成功: %s", pong)
 }
 
 func NewRedisClient(conf config.Redis) *redis.Client {

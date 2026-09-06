@@ -181,10 +181,8 @@ const hasHighRiskCommands = computed(() =>
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:6880'
 
 function getWsAuthToken(): string {
-  // TODO(security): 后端会话鉴权（Task 12）落地后，改用服务端签发的会话/访问 token。
-  // 已知限制：当前后端 /client/login 仅返回 user_id/email，尚无 token 机制，
-  // 且 /chat/ws 位于鉴权中间件的公开路径中，故暂以 user_id 作为连接标识。
-  return localStorage.getItem('user_id') || ''
+  // 使用服务端签发的 HMAC 会话 Token 作为 WS 握手凭据，不再以裸 user_id 标识身份
+  return localStorage.getItem('user_token') || ''
 }
 
 function connectWebSocket(): Promise<void> {

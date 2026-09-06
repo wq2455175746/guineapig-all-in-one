@@ -3,10 +3,10 @@ package chat
 import (
 	"fmt"
 	"net/http"
-	"strconv"
-	"strings"
 
+	"guineapig/config"
 	"guineapig/internal/service"
+	"guineapig/pkg/auth"
 	"guineapig/pkg/plugin/logger"
 
 	"github.com/gorilla/websocket"
@@ -16,8 +16,19 @@ import (
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  4096,
 	WriteBufferSize: 4096,
+	// CheckOrigin 校验请求来源：仅允许白名单来源，不再允许任意跨域握手
 	CheckOrigin: func(r *http.Request) bool {
-		return true // 开发阶段允许所有来源
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			// 非浏览器客户端（桌面应用/脚本）不携带 Origin，允许连接
+			return true
+		}
+		switch origin {
+		case "http://guineapig-client.local:5174",
+			"http://guineapig-ops-web.local:5173":
+			return true
+		}
+		return false
 	},
 }
 
@@ -28,7 +39,8 @@ func WebSocketHandler(e echo.Context) error {
 		return e.String(401, "缺少 token 参数")
 	}
 
-	userID, err := parseToken(token)
+	// 使用与服务端会话 Token 相同的 HMAC 签名校验，替代裸 user_id 解析
+	userID, err := auth.ParseUserToken(config.Global.JwtSecret, token)
 	if err != nil {
 		return e.String(401, fmt.Sprintf("token 无效: %v", err))
 	}
@@ -42,22 +54,4 @@ func WebSocketHandler(e echo.Context) error {
 	hub := service.GetHub()
 	hub.ServeWS(conn, userID)
 	return nil
-}
-
-// parseToken 从 token 中解析 user_id
-// token 格式可以是纯 user_id 数字，或 "user_{id}" 格式
-// 生产环境应接入 JWT 验证
-func parseToken(token string) (int64, error) {
-	if id, err := strconv.ParseInt(token, 10, 64); err == nil && id > 0 {
-		return id, nil
-	}
-
-	parts := strings.SplitN(token, "_", 2)
-	if len(parts) == 2 && parts[0] == "user" {
-		if id, err := strconv.ParseInt(parts[1], 10, 64); err == nil && id > 0 {
-			return id, nil
-		}
-	}
-
-	return 0, fmt.Errorf("无效的 token 格式: %s", token)
 }

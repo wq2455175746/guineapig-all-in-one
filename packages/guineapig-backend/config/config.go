@@ -1,6 +1,8 @@
 package config
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"github.com/joho/godotenv"
 	"github.com/spf13/viper"
 	"log"
@@ -11,10 +13,12 @@ import (
 var Global Config
 
 type Config struct {
-	Port    int    `yaml:"port" json:"port"`
-	Version string `yaml:"version" json:"version"`
-	Debug   bool   `yaml:"debug" json:"debug"`
-	Logger  struct {
+	Port         int    `yaml:"port" json:"port"`
+	Version      string `yaml:"version" json:"version"`
+	Debug        bool   `yaml:"debug" json:"debug"`
+	JwtSecret    string `yaml:"jwtSecret" json:"-"`    // 用户会话 Token 签名密钥，仅从环境变量注入
+	RegisterCode string `yaml:"registerCode" json:"-"` // 注册验证码，仅从环境变量注入
+	Logger       struct {
 		DbTrace bool `yaml:"dbTrace" json:"dbTrace"`
 	} `yaml:"logger" json:"logger"`
 	Database struct {
@@ -37,12 +41,24 @@ type Config struct {
 		PrivateKey string `yaml:"privateKey" json:"privateKey"`
 	} `yaml:"rsa" json:"rsa"`
 	Admin   Admin   `yaml:"admin" json:"admin"`
+	Inner   Inner   `yaml:"inner" json:"inner"`
 	S3      S3      `yaml:"s3" json:"s3"`
 	AiAgent AiAgent `yaml:"aiAgent" json:"aiAgent"`
+	AiModel AiModel `yaml:"aimodel" json:"aimodel"`
 }
 
 type Admin struct {
-	Token string `yaml:"token" json:"token"`
+	Token string `yaml:"token" json:"-"`
+}
+
+// Inner 内部服务（aiagent 等）回调鉴权配置
+type Inner struct {
+	Token string `yaml:"token" json:"-"`
+}
+
+// AiModel AI 模型相关配置
+type AiModel struct {
+	AllowedHosts string `yaml:"allowedHosts" json:"-"` // aimodel/test 网络白名单（逗号分隔，host:port）
 }
 
 type S3 struct {
@@ -74,6 +90,7 @@ func ParseConfig() *Config {
 	}
 
 	viper.SetDefault("fileDir", "./")
+	viper.SetDefault("registerCode", "8888")
 	// 加载主配置文件
 	viper.SetConfigName("config")
 	viper.SetConfigType("yaml")
@@ -95,6 +112,16 @@ func ParseConfig() *Config {
 	conf := &Config{}
 	if err := viper.Unmarshal(conf); err != nil {
 		panic(err)
+	}
+
+	// JWT_SECRET 未配置时生成随机密钥兜底（Token 不跨重启/多实例共享）
+	if conf.JwtSecret == "" {
+		buf := make([]byte, 32)
+		if _, err := rand.Read(buf); err != nil {
+			panic(err)
+		}
+		conf.JwtSecret = hex.EncodeToString(buf)
+		log.Printf("Warning: JWT_SECRET 未配置，已生成随机会话密钥（重启后已有 Token 失效）")
 	}
 
 	// 设置全局配置

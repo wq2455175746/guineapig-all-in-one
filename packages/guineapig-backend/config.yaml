@@ -1,7 +1,8 @@
 port: 6880
 version: 1.0
 debug: true
-jwtSecret: dmxaitest
+jwtSecret: ${JWT_SECRET}
+registerCode: ${REGISTER_CODE}
 database:
   autoMigrate: false
   driver: mysql
@@ -16,8 +17,17 @@ redis:
 admin:
   token: ${ADMIN_TOKEN}
 
+# 内部服务（aiagent 等）回调鉴权
+inner:
+  token: ${INNER_TOKEN}
+
 aiAgent:
   baseUrl: ${AIAGENT_BASE_URL}
+
+# aimodel/test 连接测试的网络白名单（逗号分隔，形如 api.openai.com,api.deepseek.com）
+# 未配置时默认仅允许本机回环地址（localhost/127.0.0.1），其余一律拒绝
+aimodel:
+  allowedHosts: ${AIMODEL_ALLOWED_HOSTS}
 
 s3:
   bucket: ${S3_BUCKET}

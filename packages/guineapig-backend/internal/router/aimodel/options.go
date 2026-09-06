@@ -3,6 +3,7 @@ package aimodel
 import (
 	"guineapig/internal/router/common"
 	"guineapig/internal/service"
+	gdMid "guineapig/pkg/middleware"
 	"guineapig/pkg/utils"
 	"strconv"
 
@@ -16,6 +17,11 @@ func OptionsByType(e echo.Context) error {
 	userId, err := strconv.ParseInt(userIdStr, 10, 64)
 	if err != nil {
 		return common.ResponseParamError(e, err)
+	}
+
+	// 以 Token 推导的 caller identity 覆盖客户端传入的 user_id，杜绝 IDOR
+	if uid := gdMid.CurrentUserID(e); uid > 0 {
+		userId = uid
 	}
 
 	modelType := e.QueryParam("model_type")
@@ -35,6 +41,11 @@ func Options(e echo.Context) error {
 	userId, err := strconv.ParseInt(userIdStr, 10, 64)
 	if err != nil {
 		return common.ResponseParamError(e, err)
+	}
+
+	// 以 Token 推导的 caller identity 覆盖客户端传入的 user_id，杜绝 IDOR
+	if uid := gdMid.CurrentUserID(e); uid > 0 {
+		userId = uid
 	}
 
 	resp, err := service.ListAiModelOptions(ctx, userId)

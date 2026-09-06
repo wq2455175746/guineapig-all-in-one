@@ -136,7 +136,10 @@ def _callback_backend(url: str, payload: dict) -> None:
     logger.info(
         f"[MemorySummarize] 回调: type={payload.get('mem_type')}, memory_id={payload.get('id')}"
     )
-    resp = httpx.post(url, json=payload, timeout=30)
+    headers = {}
+    if settings.INNER_TOKEN:
+        headers["X-Inner-Token"] = settings.INNER_TOKEN
+    resp = httpx.post(url, json=payload, headers=headers, timeout=30)
     resp.raise_for_status()
 
 

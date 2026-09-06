@@ -12,7 +12,7 @@ func TestEmbedFileValidatesInput(t *testing.T) {
 	_, err := EmbedFile(context.Background(), &request.FileEmbedRequest{
 		FileId:    0,
 		ResRagId: 1,
-	})
+	}, 0)
 	if err == nil {
 		t.Error("expected error for empty file_id, got nil")
 	}
@@ -21,7 +21,7 @@ func TestEmbedFileValidatesInput(t *testing.T) {
 	_, err = EmbedFile(context.Background(), &request.FileEmbedRequest{
 		FileId:    1,
 		ResRagId: 0,
-	})
+	}, 0)
 	if err == nil {
 		t.Error("expected error for empty res_rag_id, got nil")
 	}

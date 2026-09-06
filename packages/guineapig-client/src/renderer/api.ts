@@ -30,6 +30,7 @@
     // 注入三个请求头
     if (isApiRequest) {
       headers.set('X-Device-Id', localStorage.getItem('device_id') || 'unknown')
+      headers.set('X-User-Token', localStorage.getItem('user_token') || '')
       headers.set('X-User-Id', localStorage.getItem('user_id') || '')
       headers.set('X-Request-Id', generateRequestId())
     }
@@ -41,6 +42,7 @@
         localStorage.removeItem('user_id')
         localStorage.removeItem('device_id')
         localStorage.removeItem('api_key')
+        localStorage.removeItem('user_token')
 
         // 跳转到登录页（hash 路由模式）
         window.location.hash = '#/login'

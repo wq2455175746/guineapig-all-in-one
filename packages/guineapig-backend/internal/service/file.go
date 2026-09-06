@@ -245,7 +245,8 @@ func GetFileById(ctx context.Context, id int64) (*response.FileItem, error) {
 }
 
 // EmbedFile 文件嵌入知识库
-func EmbedFile(ctx context.Context, req *request.FileEmbedRequest) (*response.FileEmbedResponse, error) {
+// EmbedFile 触发文件嵌入任务。requesterUserID 为 Token 推导的 caller identity（0 表示 admin 会话）。
+func EmbedFile(ctx context.Context, req *request.FileEmbedRequest, requesterUserID int64) (*response.FileEmbedResponse, error) {
 	if req.FileId <= 0 {
 		return nil, errors.New("file_id 不能为空")
 	}
@@ -261,6 +262,10 @@ func EmbedFile(ctx context.Context, req *request.FileEmbedRequest) (*response.Fi
 	if file == nil {
 		return nil, errors.New("文件不存在")
 	}
+	// 文件属主校验，杜绝 IDOR
+	if requesterUserID > 0 && file.UserId != requesterUserID {
+		return nil, errors.New("无权操作该文件")
+	}
 
 	// 2. 查找 RAG 知识库
 	rag, err := model.MResRags.FindById(ctx, req.ResRagId)
@@ -269,6 +274,9 @@ func EmbedFile(ctx context.Context, req *request.FileEmbedRequest) (*response.Fi
 	}
 	if rag == nil {
 		return nil, errors.New("知识库不存在")
+	}
+	if requesterUserID > 0 && rag.UserId != requesterUserID {
+		return nil, errors.New("无权操作该知识库")
 	}
 
 	// 3. 获取 embedding 模型信息

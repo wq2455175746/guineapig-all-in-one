@@ -82,8 +82,12 @@ async function handleLogin() {
       return
     }
 
-    // 登录成功，写入 localStorage
-    // localStorage.setItem('api_key', apiKey.value)
+    // 登录成功，写入 localStorage（token 用于后续请求 / WS 握手的会话鉴权）
+    if (!data.result.token) {
+      loginError.value = '服务器返回异常：缺少会话 Token'
+      return
+    }
+    localStorage.setItem('user_token', data.result.token)
     localStorage.setItem('user_email', data.result.email || '')
     localStorage.setItem('user_id', String(data.result.user_id))
     localStorage.setItem('device_id', machineId.value)

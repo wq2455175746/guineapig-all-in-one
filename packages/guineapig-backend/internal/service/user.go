@@ -2,13 +2,14 @@ package service
 
 import (
 	"context"
-	"crypto/md5"
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"guineapig/config"
 	"guineapig/internal/model"
 	"guineapig/internal/request"
 	"guineapig/internal/response"
+	"guineapig/pkg/auth"
 	"guineapig/pkg/plugin/logger"
 	"guineapig/pkg/utils"
 )
@@ -53,7 +54,14 @@ func ListUser(ctx context.Context, req *request.SearchRequest) (*response.ListUs
 	return listResponse, nil
 }
 
-func DecryptUserInfo(ctx context.Context, req *request.DecryptUserInfoRequest) (*response.DecryptedUserInfoResponse, error) {
+// DecryptUserInfo 返回用户的敏感字段信息。
+// requesterUserID 为 Token 推导的 caller identity（0 表示 admin/inner 会话，可查询任意用户）；
+// 用户会话要求 requester == 目标用户，杜绝 IDOR。
+func DecryptUserInfo(ctx context.Context, req *request.DecryptUserInfoRequest, requesterUserID int64) (*response.DecryptedUserInfoResponse, error) {
+	if requesterUserID > 0 && req.UserId != requesterUserID {
+		return nil, errors.New("无权查看该用户信息")
+	}
+
 	// 获得用户信息
 	user, err := model.MUser.FindById(ctx, req.UserId)
 	if err != nil {
@@ -82,8 +90,12 @@ func Register(ctx context.Context, req *request.RegisterRequest) (*response.Regi
 		return nil, errors.New("邮箱不能为空")
 	}
 
-	// 2. 校验验证码（暂时硬编码为 8888）
-	if req.Code != "8888" {
+	// 2. 校验验证码（从配置/环境变量读取，不再硬编码 8888）
+	regCode := config.Global.RegisterCode
+	if regCode == "" {
+		regCode = "8888"
+	}
+	if req.Code != regCode {
 		return nil, errors.New("验证码错误")
 	}
 
@@ -118,13 +130,13 @@ func Register(ctx context.Context, req *request.RegisterRequest) (*response.Regi
 	sha256Hash := fmt.Sprintf("%x", sha256.Sum256([]byte(uuidStr)))
 	fullApiKey := "sk-" + sha256Hash
 
-	// 7. MD5(fullApiKey) 用于存储
-	md5Hash := fmt.Sprintf("%x", md5.Sum([]byte(fullApiKey)))
+	// 7. HMAC-SHA256(fullApiKey) 用于存储（替代弱 MD5，密钥来自 JWT_SECRET）
+	storedKey := utils.HMACApiKey(config.Global.JwtSecret, fullApiKey)
 
 	// 8. 保存到 user_apikey 表
 	apiKeyRecord := &model.UserApiKey{
 		UserId: user.Id,
-		ApiKey: md5Hash,
+		ApiKey: storedKey,
 		Status: 1,
 	}
 	if err := apiKeyRecord.Create(ctx); err != nil {
@@ -138,17 +150,35 @@ func Register(ctx context.Context, req *request.RegisterRequest) (*response.Regi
 }
 
 func ClientLogin(ctx context.Context, req *request.ClientLoginRequest) (*response.ClientLoginResponse, error) {
-	// 1. 根据 api_key 查找 apikey 记录
-	apiKeyRecord, err := model.MUserApiKey.FindByApiKey(ctx, req.ApiKey)
+	// 1. 兼容两种 api_key 提交方式：
+	//    - 新版客户端：RSA 加密密文（需后端私钥解密）
+	//    - 旧版/测试：明文 sk-xxx（解密失败则原样使用）
+	apiKey := req.ApiKey
+	if decrypted, err := DecryptKey(req.ApiKey); err == nil && decrypted != "" {
+		apiKey = decrypted
+	}
+
+	// 2. 根据 api_key 查找 apikey 记录（存储态为 HMAC-SHA256；兼容旧 MD5 数据）
+	storedHMAC := utils.HMACApiKey(config.Global.JwtSecret, apiKey)
+	apiKeyRecord, err := model.MUserApiKey.FindByStoredKey(ctx, storedHMAC)
 	if err != nil {
-		logger.ErrorReqIdf(ctx, "find api_key error: %v, apiKey: %s", err, req.ApiKey)
+		logger.ErrorReqIdf(ctx, "find api_key error: %v", err)
 		return nil, err
+	}
+	if apiKeyRecord == nil {
+		// 旧数据兼容：MD5 存储的 api_key
+		storedMD5 := utils.MD5ApiKey(apiKey)
+		apiKeyRecord, err = model.MUserApiKey.FindByStoredKey(ctx, storedMD5)
+		if err != nil {
+			logger.ErrorReqIdf(ctx, "find api_key(MD5) error: %v", err)
+			return nil, err
+		}
 	}
 	if apiKeyRecord == nil {
 		return nil, errors.New("api_key 不存在或已禁用")
 	}
 
-	// 2. 根据 user_id 查找用户信息
+	// 3. 根据 user_id 查找用户信息
 	user, err := model.MUser.FindById(ctx, apiKeyRecord.UserId)
 	if err != nil {
 		logger.ErrorReqIdf(ctx, "find user by id error: %v, userId: %d", err, apiKeyRecord.UserId)
@@ -158,9 +188,17 @@ func ClientLogin(ctx context.Context, req *request.ClientLoginRequest) (*respons
 		return nil, errors.New("用户不存在")
 	}
 
-	// 3. 返回 user_id 和 email
+	// 4. 签发 HMAC 签名会话 Token，供后续 /api/v1 请求与 WS 握手鉴权
+	sessionToken, err := auth.IssueUserToken(config.Global.JwtSecret, user.Id, auth.TokenTTL)
+	if err != nil {
+		logger.ErrorReqIdf(ctx, "issue session token error: %v, userId: %d", err, user.Id)
+		return nil, err
+	}
+
+	// 5. 返回 user_id、email 和会话 Token
 	return &response.ClientLoginResponse{
 		UserId: user.Id,
 		Email:  user.Email,
+		Token:  sessionToken,
 	}, nil
 }

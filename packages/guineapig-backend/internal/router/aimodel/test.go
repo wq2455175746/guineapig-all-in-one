@@ -15,6 +15,7 @@ import (
 	"guineapig/internal/response"
 	"guineapig/internal/router/common"
 	"guineapig/internal/service"
+	gdMid "guineapig/pkg/middleware"
 	"guineapig/pkg/utils"
 
 	"github.com/labstack/echo/v4"
@@ -31,6 +32,8 @@ func TestConnection(e echo.Context) error {
 	if req.ModelName == "" {
 		return common.ResponseParamError(e, errors.New("model_name 不能为空"))
 	}
+	// 以 Token 推导的 caller identity 覆盖客户端传入的 user_id，杜绝 IDOR
+	gdMid.BindRequester(e, &req.UserId)
 	// 支持两种方式获取 api_key：
 	// 1. 传 id+user_id → 后端从 DB 取加密 key 后解密
 	// 2. 直接传加密的 api_key → 后端解密
@@ -61,7 +64,15 @@ func doTest(ctx context.Context, req *request.AiModelTestRequest) *response.AiMo
 	// 非 Ollama：获取并解密 API Key
 	var plainKey string
 	var err error
+	apiURL := strings.TrimRight(req.ApiUrl, "/")
 	if req.Id > 0 {
+		// 使用 DB 中该模型登记的 api_url，不再信任客户端传入的 api_url
+		modelInfo, e := service.GetAiModelBase(ctx, req.Id, req.UserId)
+		if e != nil {
+			return &response.AiModelTestResponse{Connected: false, Message: fmt.Sprintf("获取模型信息失败: %v", e)}
+		}
+		apiURL = strings.TrimRight(modelInfo.ApiUrl, "/")
+
 		encryptedKey, e := service.GetEncryptedApiKey(ctx, req.Id, req.UserId)
 		if e != nil {
 			return &response.AiModelTestResponse{Connected: false, Message: fmt.Sprintf("获取 API Key 失败: %v", e)}
@@ -74,7 +85,10 @@ func doTest(ctx context.Context, req *request.AiModelTestRequest) *response.AiMo
 		return &response.AiModelTestResponse{Connected: false, Message: fmt.Sprintf("解密 API Key 失败: %v", err)}
 	}
 
-	apiURL := strings.TrimRight(req.ApiUrl, "/")
+	// api_url 网络白名单校验（防止 SSRF / 解密密钥外发到任意地址）
+	if err := service.IsAllowedTestURL(apiURL); err != nil {
+		return &response.AiModelTestResponse{Connected: false, Message: err.Error()}
+	}
 
 	var reqBody []byte
 	if req.ProviderCode == "Anthropic" {
@@ -91,7 +105,7 @@ func doTest(ctx context.Context, req *request.AiModelTestRequest) *response.AiMo
 		targetURL = apiURL + "/v1/messages"
 	}
 
-	return sendTestRequest(targetURL, reqBody, func(r *http.Request) {
+	return sendTestRequest(ctx, targetURL, reqBody, func(r *http.Request) {
 		r.Header.Set("Content-Type", "application/json")
 		if req.ProviderCode == "Anthropic" {
 			r.Header.Set("x-api-key", plainKey)
@@ -105,6 +119,11 @@ func doTest(ctx context.Context, req *request.AiModelTestRequest) *response.AiMo
 // doTestOllama 测试 Ollama 供应商连接，按 model_type 选择不同的 API 端点
 func doTestOllama(ctx context.Context, req *request.AiModelTestRequest) *response.AiModelTestResponse {
 	apiURL := strings.TrimRight(req.ApiUrl, "/")
+
+	// api_url 网络白名单校验（防止 SSRF）
+	if err := service.IsAllowedTestURL(apiURL); err != nil {
+		return &response.AiModelTestResponse{Connected: false, Message: err.Error()}
+	}
 
 	var targetURL string
 	var reqBody []byte
@@ -132,7 +151,7 @@ func doTestOllama(ctx context.Context, req *request.AiModelTestRequest) *respons
 		return &response.AiModelTestResponse{Connected: false, Message: fmt.Sprintf("构建请求失败: %v", err)}
 	}
 
-	return sendTestRequest(targetURL, reqBody, func(r *http.Request) {
+	return sendTestRequest(ctx, targetURL, reqBody, func(r *http.Request) {
 		r.Header.Set("Content-Type", "application/json")
 	})
 }
@@ -140,6 +159,11 @@ func doTestOllama(ctx context.Context, req *request.AiModelTestRequest) *respons
 // doTestVllm 测试 Vllm 供应商连接，按 model_type 选择不同的 API 端点
 func doTestVllm(ctx context.Context, req *request.AiModelTestRequest) *response.AiModelTestResponse {
 	apiURL := strings.TrimRight(req.ApiUrl, "/")
+
+	// api_url 网络白名单校验（防止 SSRF）
+	if err := service.IsAllowedTestURL(apiURL); err != nil {
+		return &response.AiModelTestResponse{Connected: false, Message: err.Error()}
+	}
 
 	var targetURL string
 	var reqBody []byte
@@ -168,14 +192,15 @@ func doTestVllm(ctx context.Context, req *request.AiModelTestRequest) *response.
 		return &response.AiModelTestResponse{Connected: false, Message: fmt.Sprintf("构建请求失败: %v", err)}
 	}
 
-	return sendTestRequest(targetURL, reqBody, func(r *http.Request) {
+	return sendTestRequest(ctx, targetURL, reqBody, func(r *http.Request) {
 		r.Header.Set("Content-Type", "application/json")
 	})
 }
 
-// sendTestRequest 发送 HTTP POST 请求并解析响应结果
-func sendTestRequest(targetURL string, reqBody []byte, headerFn func(*http.Request)) *response.AiModelTestResponse {
-	httpReq, err := http.NewRequest("POST", targetURL, bytes.NewReader(reqBody))
+// sendTestRequest 发送 HTTP POST 请求并解析响应结果。
+// 绑定 request context（随请求取消）并设置超时，防止悬挂请求。
+func sendTestRequest(ctx context.Context, targetURL string, reqBody []byte, headerFn func(*http.Request)) *response.AiModelTestResponse {
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewReader(reqBody))
 	if err != nil {
 		return &response.AiModelTestResponse{Connected: false, Message: fmt.Sprintf("创建请求失败: %v", err)}
 	}
@@ -189,7 +214,10 @@ func sendTestRequest(targetURL string, reqBody []byte, headerFn func(*http.Reque
 	if err != nil {
 		return &response.AiModelTestResponse{Connected: false, Message: fmt.Sprintf("连接失败: %v", err)}
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}()
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return &response.AiModelTestResponse{Connected: true}

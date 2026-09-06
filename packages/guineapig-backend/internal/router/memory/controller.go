@@ -5,6 +5,7 @@ import (
 	"guineapig/internal/response"
 	"guineapig/internal/router/common"
 	"guineapig/internal/service"
+	gdMid "guineapig/pkg/middleware"
 	"guineapig/pkg/utils"
 	"strconv"
 
@@ -17,6 +18,11 @@ func List(e echo.Context) error {
 	var req request.MemoryListRequest
 	if err := e.Bind(&req); err != nil {
 		return common.ResponseParamError(e, err)
+	}
+
+	// 用户会话强制查询自己的记忆；admin 会话可查询任意用户
+	if uid := gdMid.CurrentUserID(e); uid > 0 {
+		req.UserId = uid
 	}
 
 	resp, err := service.ListMemory(ctx, &req)
@@ -36,7 +42,7 @@ func Get(e echo.Context) error {
 		return common.ResponseParamError(e, err)
 	}
 
-	resp, err := service.GetMemory(ctx, id)
+	resp, err := service.GetMemory(ctx, id, gdMid.CurrentUserID(e))
 	if err != nil {
 		return common.ResponseServerError(e, err)
 	}
@@ -51,6 +57,10 @@ func Delete(e echo.Context) error {
 	if err := e.Bind(&req); err != nil {
 		return common.ResponseParamError(e, err)
 	}
+
+	// 以 Token 推导的 caller identity 覆盖客户端传入的 user_id，杜绝 IDOR
+	gdMid.BindRequester(e, &req.UserId)
+
 	if err := service.DeleteMemory(ctx, &req); err != nil {
 		return common.ResponseServerError(e, err)
 	}
@@ -65,6 +75,9 @@ func Summarize(e echo.Context) error {
 	if err := e.Bind(&req); err != nil {
 		return common.ResponseParamError(e, err)
 	}
+
+	// 以 Token 推导的 caller identity 覆盖客户端传入的 user_id，杜绝 IDOR
+	gdMid.BindRequester(e, &req.UserId)
 
 	memoryId, err := service.CreateMemorySummary(ctx, &req)
 	if err != nil {

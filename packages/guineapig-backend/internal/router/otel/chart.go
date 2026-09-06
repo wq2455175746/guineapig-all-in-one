@@ -4,6 +4,7 @@ import (
 	"guineapig/internal/request"
 	"guineapig/internal/router/common"
 	"guineapig/internal/service"
+	gdMid "guineapig/pkg/middleware"
 	"guineapig/pkg/utils"
 
 	"github.com/labstack/echo/v4"
@@ -15,6 +16,11 @@ func ChartData(e echo.Context) error {
 	var req request.ChartDataRequest
 	if err := e.Bind(&req); err != nil {
 		return common.ResponseParamError(e, err)
+	}
+
+	// 用户会话强制查询自己的数据；admin 会话可查询任意用户
+	if uid := gdMid.CurrentUserID(e); uid > 0 {
+		req.UserId = uid
 	}
 
 	if req.Chart == "" {

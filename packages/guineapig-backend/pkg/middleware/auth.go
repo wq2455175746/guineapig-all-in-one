@@ -2,13 +2,13 @@ package middleware
 
 import (
 	"net/http"
-	"strconv"
 	"strings"
 
 	"github.com/labstack/echo/v4"
 	"github.com/spf13/cast"
 	"guineapig/config"
 	"guineapig/internal/model"
+	"guineapig/pkg/auth"
 )
 
 type AuthErrorResponse struct {
@@ -18,11 +18,26 @@ type AuthErrorResponse struct {
 	RequestId string `json:"requestId"`
 }
 
+// 鉴权上下文 Key
+const (
+	ContextRoleKey   = "authRole"
+	ContextUserIDKey = "authUserId"
+)
+
+// 鉴权角色
+const (
+	RoleAdmin = "admin"
+	RoleUser  = "user"
+	RoleInner = "inner"
+)
+
 // Auth 接口鉴权中间件
-// 对于 /api/v1/ 路径：检查 X-User-Id 对应的用户是否存在
-// 对于 /admin/api/v1/ 路径：检查 X-Admin-Token 是否匹配配置中的管理后台 Token
-// 对于 /inner/api/v1/ 路径：跳过鉴权（内部服务调用）
-// 跳过公开路径：/client/login, /client/register, /chat/ws 等
+//   - /api/v1/*          ：校验 HMAC 签名用户会话 Token（X-User-Token 或 Authorization: Bearer），
+//     从 Token 推导 caller identity，X-User-Id 不再作为可信身份。
+//   - /admin/api/v1/*    ：校验 X-Admin-Token 是否匹配配置中的管理后台 Token。
+//   - /inner/api/v1/*    ：校验 X-Inner-Token 是否匹配配置中的内部服务 Token。
+//   - 公开路径（/client/login、/client/register）：跳过鉴权。
+//   - /chat/ws：跳过 header 鉴权，Token 由 WebSocket 握手参数校验（见 chat.WebSocketHandler）。
 func Auth() echo.MiddlewareFunc {
 	skipPaths := map[string]bool{
 		"/api/v1/client/login":    true,
@@ -31,6 +46,7 @@ func Auth() echo.MiddlewareFunc {
 	}
 
 	adminToken := config.Global.Admin.Token
+	innerToken := config.Global.Inner.Token
 
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
@@ -68,23 +84,41 @@ func Auth() echo.MiddlewareFunc {
 				if token != adminToken {
 					return authErr("管理后台 Token 无效")
 				}
+				c.Set(ContextRoleKey, RoleAdmin)
 				return next(c)
 			}
 
-			// 内部服务路由（/inner/api/v1/）：跳过鉴权
+			// 内部服务路由（/inner/api/v1/）：校验共享内部 Token
 			if strings.HasPrefix(path, "/inner/api/v1/") {
+				token := c.Request().Header.Get("X-Inner-Token")
+				if token == "" {
+					return authErr("缺少内部服务 Token")
+				}
+				if innerToken == "" {
+					return authErr("内部服务 Token 未配置")
+				}
+				if token != innerToken {
+					return authErr("内部服务 Token 无效")
+				}
+				c.Set(ContextRoleKey, RoleInner)
 				return next(c)
 			}
 
-			// 普通客户端鉴权：检查 X-User-Id
-			userIDStr := c.Request().Header.Get("X-User-Id")
-			if userIDStr == "" {
-				return authErr("缺少用户标识")
+			// 普通客户端鉴权：校验 HMAC 签名用户会话 Token
+			token := c.Request().Header.Get("X-User-Token")
+			if token == "" {
+				authz := c.Request().Header.Get("Authorization")
+				if strings.HasPrefix(authz, "Bearer ") {
+					token = strings.TrimPrefix(authz, "Bearer ")
+				}
+			}
+			if token == "" {
+				return authErr("缺少用户 Token")
 			}
 
-			userID, err := strconv.ParseInt(userIDStr, 10, 64)
+			userID, err := auth.ParseUserToken(config.Global.JwtSecret, token)
 			if err != nil {
-				return authErr("无效的用户标识")
+				return authErr("用户 Token 无效或已过期")
 			}
 
 			// 校验用户是否存在
@@ -97,12 +131,34 @@ func Auth() echo.MiddlewareFunc {
 					RequestId: requestId,
 				})
 			}
-
 			if user == nil {
 				return authErr("用户不存在或未登录")
 			}
 
+			c.Set(ContextRoleKey, RoleUser)
+			c.Set(ContextUserIDKey, userID)
 			return next(c)
 		}
+	}
+}
+
+// CurrentUserID 返回当前会话的 caller userID。
+// 仅用户会话返回 >0 的值；admin / inner 会话返回 0。
+func CurrentUserID(c echo.Context) int64 {
+	uid, _ := c.Get(ContextUserIDKey).(int64)
+	return uid
+}
+
+// IsAdminSession 判断当前会话是否为管理后台会话。
+func IsAdminSession(c echo.Context) bool {
+	return c.Get(ContextRoleKey) == RoleAdmin
+}
+
+// BindRequester 将请求中的 userId 覆盖为 Token 推导的 caller identity。
+// 仅对用户会话生效；admin / inner 会话保留调用方传入的 userId。
+// 用于杜绝客户端伪造他人 user_id 的 IDOR。
+func BindRequester(c echo.Context, userId *int64) {
+	if uid := CurrentUserID(c); uid > 0 {
+		*userId = uid
 	}
 }

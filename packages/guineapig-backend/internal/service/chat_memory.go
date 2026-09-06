@@ -136,13 +136,17 @@ func ListMemory(ctx context.Context, req *request.MemoryListRequest) (*response.
 }
 
 // GetMemory 获取单条记忆
-func GetMemory(ctx context.Context, id int64) (*response.MemoryItem, error) {
+// requesterUserID 为 Token 推导的 caller identity（0 表示 admin 会话）；用户会话要求 requester == 资源属主。
+func GetMemory(ctx context.Context, id int64, requesterUserID int64) (*response.MemoryItem, error) {
 	m, err := model.MChatMemory.FindById(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("查询记忆失败: %w", err)
 	}
 	if m == nil {
 		return nil, errors.New("记忆不存在")
+	}
+	if requesterUserID > 0 && m.UserId != requesterUserID {
+		return nil, errors.New("无权访问该记忆")
 	}
 
 	return &response.MemoryItem{

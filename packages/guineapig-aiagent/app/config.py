@@ -66,6 +66,8 @@ class Settings(BaseSettings):
     BACKEND_BASE_URL: str = Field(
         "http://guineapig-backend:6880", alias="BACKEND_BASE_URL"
     )
+    # 回调 guineapig-backend 内部接口（/inner/api/v1/*）的共享 Token
+    INNER_TOKEN: str = Field("", alias="INNER_TOKEN")
 
     # LLM (DeepSeek) 配置
     LLM_API_KEY: str = ""

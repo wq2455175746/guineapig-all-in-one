@@ -5,6 +5,7 @@ import (
 	"guineapig/internal/request"
 	"guineapig/internal/router/common"
 	"guineapig/internal/service"
+	gdMid "guineapig/pkg/middleware"
 	"guineapig/pkg/utils"
 )
 
@@ -14,7 +15,8 @@ func DecryptUserInfo(e echo.Context) error {
 	if err := e.Bind(&req); err != nil {
 		return common.ResponseParamError(e, err)
 	}
-	resp, err := service.DecryptUserInfo(ctx, &req)
+
+	resp, err := service.DecryptUserInfo(ctx, &req, gdMid.CurrentUserID(e))
 	if err != nil {
 		return common.ResponseServerError(e, err)
 	}

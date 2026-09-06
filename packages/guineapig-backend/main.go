@@ -11,6 +11,7 @@ import (
 	"guineapig/pkg/plugin/logger"
 	"os"
 	"os/signal"
+	"regexp"
 	"syscall"
 	"time"
 
@@ -30,12 +31,13 @@ func main() {
 	//--解析配置文件
 	conf := config.ParseConfig()
 	if conf.Debug {
-		// debug 模式，打印配置文件
+		// debug 模式，打印配置文件（脱敏敏感字段）
 		buf, err := json.MarshalIndent(conf, "", "\t")
 		if err != nil {
 			panic(err)
 		}
-		logger.Infof("guinea-pig  parse config: %s", string(buf))
+		redacted := redactSecrets(string(buf))
+		logger.Infof("guinea-pig  parse config: %s", redacted)
 	}
 
 	//--安装插件
@@ -104,6 +106,15 @@ func main() {
 
 func setupPlugin(conf *config.Config, log *zap.Logger) {
 	plugin.Init(conf, log)
+}
+
+// redactSecrets 对配置 JSON 中的敏感字段值进行脱敏，避免 debug 模式打印泄露凭据。
+func redactSecrets(s string) string {
+	for _, key := range []string{"source", "password", "accessKey", "secretKey"} {
+		re := regexp.MustCompile(`"` + key + `":\s*"[^"]*"`)
+		s = re.ReplaceAllString(s, `"`+key+`": "***"`)
+	}
+	return s
 }
 
 // asynqLogger 适配 Asynq 日志到 Zap

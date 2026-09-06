@@ -245,6 +245,7 @@ def report_progress(backend_url: str, file_id: int, task_id: str, progress: int)
                 "task_id": task_id,
                 "progress": progress,
             },
+            headers=_inner_headers(),
             timeout=10,
         )
         if resp.status_code == 200:
@@ -268,6 +269,7 @@ def report_error(backend_url: str, file_id: int, task_id: str, error_msg: str):
                 "progress": 0,
                 "error": error_msg,
             },
+            headers=_inner_headers(),
             timeout=10,
         )
         if resp.status_code == 200:
@@ -276,6 +278,14 @@ def report_error(backend_url: str, file_id: int, task_id: str, error_msg: str):
             logger.warning(f"报告错误失败: {resp.status_code}")
     except Exception as e:
         logger.warning(f"报告错误异常: {e}")
+
+
+def _inner_headers() -> dict:
+    """内部回调鉴权请求头"""
+    headers = {}
+    if settings.INNER_TOKEN:
+        headers["X-Inner-Token"] = settings.INNER_TOKEN
+    return headers
 
 
 def process_file_embedding(params: dict):

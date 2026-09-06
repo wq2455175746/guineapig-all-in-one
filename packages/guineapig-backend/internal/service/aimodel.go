@@ -9,6 +9,9 @@ import (
 	"guineapig/internal/request"
 	"guineapig/internal/response"
 	"guineapig/pkg/utils"
+	"net"
+	"net/url"
+	"strings"
 	"sync"
 )
 
@@ -300,4 +303,59 @@ func GetEncryptedApiKey(ctx context.Context, id, userId int64) (string, error) {
 		return "", errors.New("api_key 为空")
 	}
 	return existing.ApiKey, nil
+}
+
+// GetAiModelBase 返回模型登记的 api_url（供 test connection 使用，不信任客户端传入的地址）
+func GetAiModelBase(ctx context.Context, id, userId int64) (*model.UserAiModel, error) {
+	existing, err := model.MUserAiModel.FindById(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if existing == nil {
+		return nil, errors.New("记录不存在")
+	}
+	if existing.UserId != userId {
+		return nil, errors.New("无权操作该记录")
+	}
+	return existing, nil
+}
+
+// IsAllowedTestURL 校验 aimodel/test 的 api_url 是否在网络白名单内，防止 SSRF 与解密密钥外发。
+//   - 未配置 AIMODEL_ALLOWED_HOSTS 时，仅允许本机回环地址（本地 Ollama / vLLM）；
+//   - 配置后，额外允许列表中的主机（可带端口）。
+func IsAllowedTestURL(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return errors.New("api_url 格式无效")
+	}
+	host := u.Hostname()
+	if host == "" {
+		return errors.New("api_url 格式无效")
+	}
+
+	// 回环地址始终允许（本地 Ollama / vLLM / 内网开发环境）
+	if host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "0.0.0.0" {
+		return nil
+	}
+
+	cfg := config.Global.AiModel.AllowedHosts
+	if cfg == "" {
+		return errors.New("api_url 不在网络白名单内（请配置 AIMODEL_ALLOWED_HOSTS 后再测试外部供应商）")
+	}
+
+	for _, entry := range strings.Split(cfg, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		eHost := entry
+		if h, _, err := net.SplitHostPort(entry); err == nil {
+			eHost = h
+		}
+		if strings.EqualFold(eHost, host) {
+			return nil
+		}
+	}
+
+	return errors.New("api_url 不在网络白名单内")
 }

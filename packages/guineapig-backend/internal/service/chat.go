@@ -40,6 +40,13 @@ func SendChatMessage(ctx context.Context, req *request.ChatSendRequest) (*respon
 		if err != nil {
 			return nil, fmt.Errorf("会话不存在: %w", err)
 		}
+		if conversation == nil {
+			return nil, errors.New("会话不存在")
+		}
+		// 会话属主校验（req.UserId 已由鉴权中间件覆盖为 Token 身份）
+		if conversation.UserId != req.UserId {
+			return nil, errors.New("无权操作该会话")
+		}
 		// 更新会话时间
 		conversation.UpdatedAt = now
 		_ = plugin.GetDB(ctx).Model(&model.ChatConversation{}).
@@ -283,10 +290,23 @@ func ListConversations(ctx context.Context, req *request.ConversationListRequest
 }
 
 // ListMessages 加载指定会话的消息列表
-func ListMessages(ctx context.Context, req *request.MessageListRequest) (*response.PaginatedResponse, error) {
+// requesterUserID 为 Token 推导的 caller identity（0 表示 admin 会话）；用户会话要求会话属主 == requester。
+func ListMessages(ctx context.Context, req *request.MessageListRequest, requesterUserID int64) (*response.PaginatedResponse, error) {
 	if req.ConversationId <= 0 {
 		return nil, errors.New("conversation_id 不能为空")
 	}
+
+	// 会话属主校验，杜绝跨用户读取消息
+	if requesterUserID > 0 {
+		conversation, err := model.MChatConversation.FindById(ctx, req.ConversationId)
+		if err != nil || conversation == nil {
+			return nil, errors.New("会话不存在")
+		}
+		if conversation.UserId != requesterUserID {
+			return nil, errors.New("无权访问该会话")
+		}
+	}
+
 	limit := req.Limit
 	if limit <= 0 || limit > 200 {
 		limit = 100

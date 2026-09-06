@@ -25,9 +25,10 @@ func (k *UserApiKey) Create(ctx context.Context) error {
 	return plugin.GetDB(ctx).Create(k).Error
 }
 
-func (*UserApiKey) FindByApiKey(ctx context.Context, apiKey string) (*UserApiKey, error) {
+// FindByStoredKey 根据已哈希的 api_key（HMAC-SHA256 或兼容旧数据的 MD5）精确匹配存储值。
+func (*UserApiKey) FindByStoredKey(ctx context.Context, storedKey string) (*UserApiKey, error) {
 	var key UserApiKey
-	err := plugin.GetDB(ctx).Where("api_key = ? AND status = 1", apiKey).First(&key).Error
+	err := plugin.GetDB(ctx).Where("api_key = ? AND status = 1", storedKey).First(&key).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil

@@ -354,7 +354,8 @@ func (h *Hub) handleAgentSend(client *ClientConnection, env *response.WSEnvelope
 		return
 	}
 
-	// 2. 创建/获取会话 + 用户消息
+	// 2. 创建/获取会话 + 用户消息（以 WS 连接鉴权身份覆盖 payload 中的 userId）
+	req.UserId = client.UserID
 	msgResp, err := SendChatMessage(ctx, req)
 	if err != nil {
 		h.sendError(client, fmt.Sprintf("创建消息失败: %v", err))
@@ -455,6 +456,11 @@ func (h *Hub) handleAgentSend(client *ClientConnection, env *response.WSEnvelope
 
 	// 5. 异步调用 aiagent
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Errorf("[AgentSend] goroutine panic: user_id=%d, conv_id=%d, err=%v", client.UserID, convID, r)
+			}
+		}()
 		var contentBuf strings.Builder
 		finalData, proxyErr := h.proxyAiAgentAgentStream(
 			ctx, convID, userMsgID, agentReq, client, client.UserID, &contentBuf,

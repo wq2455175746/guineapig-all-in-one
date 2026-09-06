@@ -24,6 +24,7 @@ type DecryptedUserInfoResponse struct {
 type ClientLoginResponse struct {
 	UserId int64  `json:"user_id,string"`
 	Email  string `json:"email"`
+	Token  string `json:"token"` // HMAC 签名会话 Token，客户端需在后续请求与 WS 握手中携带
 }
 
 type RegisterResponse struct {

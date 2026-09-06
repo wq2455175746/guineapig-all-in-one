@@ -40,7 +40,7 @@ func NewServer(debug bool) *EchoServer {
 		// 2. 是否允许跨域请求携带 Cookie、Token 凭证
 		AllowCredentials: true,
 		// 3. 前端请求里允许携带的自定义请求头白名单
-		AllowHeaders: []string{"Origin", "Content-Type", "Accept", "Authorization", "X-Device-Id", "X-User-Id", "X-Request-Id", "X-Admin-Token"},
+		AllowHeaders: []string{"Origin", "Content-Type", "Accept", "Authorization", "X-Device-Id", "X-User-Id", "X-User-Token", "X-Request-Id", "X-Admin-Token", "X-Inner-Token"},
 		// 4. 允许前端发起的 HTTP 请求方法
 		AllowMethods: []string{echo.GET, echo.POST, echo.PUT, echo.DELETE, echo.OPTIONS},
 	}))
@@ -79,9 +79,10 @@ func (s *EchoServer) Run(port int) {
 func (s *EchoServer) RunAsync(port int) chan struct{} {
 	done := make(chan struct{})
 	go func() {
+		// 无论 Start 返回错误还是被正常关闭，都保证 close(done)，避免调用方死锁
+		defer close(done)
 		if err := s.Start(fmt.Sprintf(":%d", port)); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Errorf("echo server error: %v", err)
-			close(done)
 		}
 	}()
 	return done
