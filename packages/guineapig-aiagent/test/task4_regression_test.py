@@ -154,3 +154,104 @@ class TestMilvusClientReuse:
         # 不同 db_name 视为不同客户端
         milvus_clients.get_milvus_client("localhost", "19530", "other")
         assert mock_class.call_count == 2
+
+
+class TestRetrieveRagContextAsync:
+    """retrieve_rag_context 异步化回归测试 — 直接 await，mock 底层向量化/检索/重排"""
+
+    async def _call(self, **overrides):
+        from app.services.rag_retrieval_service import retrieve_rag_context
+
+        kwargs = dict(
+            rag_names=["kb_a", "kb_b"],
+            user_id=42,
+            query="测试问题",
+            embedding_api_url="https://llm.example/v1",
+            embedding_api_key="k",
+            embedding_model_name="emb-model",
+            reranker_api_url="https://llm.example/v1",
+            reranker_api_key="k",
+            reranker_model_name="rerank-model",
+            milvus_host="localhost",
+            milvus_port="19530",
+            top_k=20,
+            rerank_top_k=3,
+        )
+        kwargs.update(overrides)
+        return await retrieve_rag_context(**kwargs)
+
+    @pytest.mark.asyncio
+    async def test_searches_all_collections_and_formats_results(self, mocker):
+        """应检索全部集合并返回包含重排结果的 Markdown"""
+        mocker.patch(
+            "app.services.rag_service.EmbeddingService.get_embedding",
+            return_value=[0.1, 0.2, 0.3],
+        )
+
+        search_results = {
+            "kb_a": [
+                {"text_chunk": "片段来自知识库A", "score": 0.95, "collection": "kb_a"}
+            ],
+            "kb_b": [
+                {"text_chunk": "片段来自知识库B", "score": 0.88, "collection": "kb_b"}
+            ],
+        }
+        mock_search = mocker.patch(
+            "app.services.rag_retrieval_service.MilvusSearcher.search_collection",
+            side_effect=lambda collection_name, **kwargs: search_results[collection_name],
+        )
+
+        # 重排直接按传入顺序返回（不做实际排序）
+        mocker.patch(
+            "app.services.rag_retrieval_service.RerankerService.rerank",
+            side_effect=lambda query, documents, top_k=3: [
+                {"text": documents[0], "relevance_score": 1.0, "index": 0},
+                {"text": documents[1], "relevance_score": 0.9, "index": 1},
+            ],
+        )
+
+        result = await self._call()
+
+        # 所有集合都被检索，且传入的向量与 top_k 正确
+        assert mock_search.call_count == 2
+        called_names = {c.kwargs["collection_name"] for c in mock_search.call_args_list}
+        assert called_names == {"kb_a", "kb_b"}
+        for call in mock_search.call_args_list:
+            assert call.kwargs["query_embedding"] == [0.1, 0.2, 0.3]
+            assert call.kwargs["top_k"] == 20
+
+        # 返回结构：Markdown 片段包含重排后的文本块
+        assert "## 知识库检索结果" in result
+        assert "片段来自知识库A" in result
+        assert "片段来自知识库B" in result
+        assert "请参考以上知识库检索结果回答用户问题" in result
+
+    @pytest.mark.asyncio
+    async def test_no_search_results_returns_empty_string(self, mocker):
+        """无检索结果时应返回空字符串"""
+        mocker.patch(
+            "app.services.rag_service.EmbeddingService.get_embedding",
+            return_value=[0.1],
+        )
+        mocker.patch(
+            "app.services.rag_retrieval_service.MilvusSearcher.search_collection",
+            return_value=[],
+        )
+
+        result = await self._call(rag_names=["kb_a", "kb_b"])
+        assert result == ""
+
+    @pytest.mark.asyncio
+    async def test_empty_rag_names_returns_empty_string(self, mocker):
+        """rag_names 为空时不检索任何集合，直接返回空字符串"""
+        mocker.patch(
+            "app.services.rag_service.EmbeddingService.get_embedding",
+            return_value=[0.1],
+        )
+        mock_search = mocker.patch(
+            "app.services.rag_retrieval_service.MilvusSearcher.search_collection"
+        )
+
+        result = await self._call(rag_names=[])
+        assert result == ""
+        mock_search.assert_not_called()
