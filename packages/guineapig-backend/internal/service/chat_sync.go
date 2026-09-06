@@ -15,6 +15,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"gorm.io/gorm"
 )
 
 // SyncChatMessage 同步方式处理 IM Bot 聊天消息
@@ -42,10 +44,12 @@ func SyncChatMessage(ctx context.Context, userID int64, platform, extChatID, con
 		return "", fmt.Errorf("存储用户消息失败: %w", err)
 	}
 
-	// 更新会话消息计数
-	_ = plugin.GetDB(ctx).Model(&model.ChatConversation{}).
+	// 更新会话消息计数（原子自增，避免并发 read-modify-write 竞态）
+	if err := plugin.GetDB(ctx).Model(&model.ChatConversation{}).
 		Where("id = ?", conversation.Id).
-		UpdateColumn("message_count", conversation.MessageCount+1)
+		UpdateColumn("message_count", gorm.Expr("message_count + 1")).Error; err != nil {
+		logger.Errorf("[SyncChat] 更新会话消息计数失败: conversation_id=%d, err=%v", conversation.Id, err)
+	}
 
 	// 3. 构建 LLM 上下文
 	messages, err := buildLLMMessages(ctx, conversation)
@@ -102,9 +106,11 @@ func findOrCreateExtConversation(ctx context.Context, userID int64, platform, ex
 	if err == nil {
 		// 已有会话，更新时间
 		now := time.Now()
-		_ = db.Model(&conversation).
+		if err := db.Model(&conversation).
 			Where("id = ?", conversation.Id).
-			Update("updated_at", now).Error
+			Update("updated_at", now).Error; err != nil {
+			logger.Errorf("[SyncChat] 更新会话时间失败: conversation_id=%d, err=%v", conversation.Id, err)
+		}
 		conversation.UpdatedAt = now
 		return &conversation, nil
 	}
@@ -191,7 +197,10 @@ func callAiAgentLLM(ctx context.Context, modelConfig *ModelConfig, messages []ma
 	if webSearchEnabled {
 		reqMap["web_search_enabled"] = true
 	}
-	reqBody, _ := json.Marshal(reqMap)
+	reqBody, err := json.Marshal(reqMap)
+	if err != nil {
+		return "", fmt.Errorf("序列化 AiAgent 请求失败: %w", err)
+	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		baseURL+"/guineapig-aiagent/llm/chat/stream",

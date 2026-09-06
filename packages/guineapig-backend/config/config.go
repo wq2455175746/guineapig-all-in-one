@@ -5,7 +5,7 @@ import (
 	"encoding/hex"
 	"github.com/joho/godotenv"
 	"github.com/spf13/viper"
-	"log"
+	"guineapig/pkg/plugin/logger"
 	"os"
 )
 
@@ -86,7 +86,7 @@ type Redis struct {
 func ParseConfig() *Config {
 	// 使用godotenv加载.env文件
 	if err := godotenv.Load(); err != nil {
-		log.Printf("Warning: .env file not found or error loading: %v", err)
+		logger.Warnf("Warning: .env file not found or error loading: %v", err)
 	}
 
 	viper.SetDefault("fileDir", "./")
@@ -114,6 +114,14 @@ func ParseConfig() *Config {
 		panic(err)
 	}
 
+	// Debug 模式由环境变量 DEBUG 控制（默认 false）。
+	// 避免 config.yaml 硬编码 true 导致启动时打印含密钥配置、Echo 错误响应泄漏堆栈。
+	if v := os.Getenv("DEBUG"); v == "true" || v == "1" {
+		conf.Debug = true
+	} else {
+		conf.Debug = false
+	}
+
 	// JWT_SECRET 未配置时生成随机密钥兜底（Token 不跨重启/多实例共享）
 	if conf.JwtSecret == "" {
 		buf := make([]byte, 32)
@@ -121,7 +129,7 @@ func ParseConfig() *Config {
 			panic(err)
 		}
 		conf.JwtSecret = hex.EncodeToString(buf)
-		log.Printf("Warning: JWT_SECRET 未配置，已生成随机会话密钥（重启后已有 Token 失效）")
+		logger.Warnf("Warning: JWT_SECRET 未配置，已生成随机会话密钥（重启后已有 Token 失效）")
 	}
 
 	// 设置全局配置

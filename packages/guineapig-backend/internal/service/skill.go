@@ -154,9 +154,12 @@ func callAiAgentSkillProcess(ctx context.Context, objectKey string) (*SkillAiAge
 		return nil, errors.New("AIAGENT_BASE_URL 未配置")
 	}
 
-	reqBody, _ := json.Marshal(map[string]string{
+	reqBody, err := json.Marshal(map[string]string{
 		"objectKey": objectKey,
 	})
+	if err != nil {
+		return nil, fmt.Errorf("序列化 skill 解析请求失败: %w", err)
+	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		baseURL+"/guineapig-aiagent/skill/process",

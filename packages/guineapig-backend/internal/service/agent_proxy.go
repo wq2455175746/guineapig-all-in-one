@@ -49,7 +49,10 @@ func (h *Hub) proxyAiAgentAgentStream(
 		return nil, fmt.Errorf("AIAGENT_BASE_URL 未配置")
 	}
 
-	reqBody, _ := json.Marshal(requestBody)
+	reqBody, err := json.Marshal(requestBody)
+	if err != nil {
+		return nil, fmt.Errorf("序列化 agent 请求失败: %w", err)
+	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		baseURL+"/guineapig-aiagent/agent/chat/stream",
@@ -383,12 +386,17 @@ func (h *Hub) handleAgentSend(client *ClientConnection, env *response.WSEnvelope
 	})
 
 	// 保存用户配置到 Redis（供飞书等外部渠道读取）
-	_ = SetUserChatConfig(ctx, client.UserID, req.ModelId, req.WebSearchEnabled, req.AgentModeEnabled)
+	if err := SetUserChatConfig(ctx, client.UserID, req.ModelId, req.WebSearchEnabled, req.AgentModeEnabled); err != nil {
+		logger.Warnf("[Agent] 保存用户聊天配置失败: user_id=%d, err=%v", client.UserID, err)
+	}
 
 	// 4. 加载三种记忆（按顺序：语言记忆 → 场景记忆 → 工作记忆）
 	// 4a. 语言记忆（RAG）：从最新用户消息的附件解析知识库配置
 	var ragContext *RagContext
-	ragContext, _ = resolveRagContextFromLatestMessage(ctx, convID, client.UserID)
+	ragContext, ragErr := resolveRagContextFromLatestMessage(ctx, convID, client.UserID)
+	if ragErr != nil {
+		logger.Warnf("[Agent] 解析 RAG 上下文失败: conversation_id=%d, user_id=%d, err=%v", convID, client.UserID, ragErr)
+	}
 
 	// 4b. 场景记忆：加载用户活跃的 chat_memory 记录
 	var sceneMemories []map[string]string
@@ -588,7 +596,10 @@ func (h *Hub) callAiAgentAgentControl(path string, body map[string]any) error {
 		return fmt.Errorf("AIAGENT_BASE_URL 未配置")
 	}
 
-	reqBody, _ := json.Marshal(body)
+	reqBody, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("序列化控制请求失败: %w", err)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"time"
 
@@ -15,6 +14,7 @@ import (
 	"guineapig/internal/request"
 	"guineapig/internal/response"
 	"guineapig/pkg/plugin"
+	"guineapig/pkg/plugin/logger"
 	"guineapig/pkg/utils"
 
 	"github.com/google/uuid"
@@ -64,7 +64,10 @@ func CreateFile(ctx context.Context, req *request.FileCreateRequest) (*response.
 		Size: req.FileSize,
 		Md5:  req.FileMd5,
 	}
-	metaBytes, _ := json.Marshal(meta)
+	metaBytes, err := json.Marshal(meta)
+	if err != nil {
+		return nil, fmt.Errorf("序列化文件元数据失败: %w", err)
+	}
 
 	m := &model.ResFiles{
 		UserId:       req.UserId,
@@ -298,7 +301,10 @@ func EmbedFile(ctx context.Context, req *request.FileEmbedRequest, requesterUser
 		ResRagId:         req.ResRagId,
 		TaskId:           taskId,
 	}
-	embedBytes, _ := json.Marshal(embedConfig)
+	embedBytes, err := json.Marshal(embedConfig)
+	if err != nil {
+		return nil, fmt.Errorf("序列化 embedding_config 失败: %w", err)
+	}
 	embedStr := string(embedBytes)
 	if err := model.MResFiles.UpdateEmbeddingConfig(ctx, req.FileId, embedStr); err != nil {
 		return nil, fmt.Errorf("更新 embedding_config 失败: %w", err)
@@ -309,7 +315,10 @@ func EmbedFile(ctx context.Context, req *request.FileEmbedRequest, requesterUser
 
 	// 6. 更新 rag.rag_metadata (is_used = true)
 	ragMeta := RagMetadataData{IsUsed: true}
-	ragMetaBytes, _ := json.Marshal(ragMeta)
+	ragMetaBytes, err := json.Marshal(ragMeta)
+	if err != nil {
+		return nil, fmt.Errorf("序列化 rag_metadata 失败: %w", err)
+	}
 	ragMetaStr := string(ragMetaBytes)
 	if err := model.MResRags.UpdateRagMetadata(ctx, req.ResRagId, ragMetaStr); err != nil {
 		return nil, fmt.Errorf("更新 rag_metadata 失败: %w", err)
@@ -353,7 +362,7 @@ func callAiAgentEmbedFile(ctx context.Context, params map[string]any) {
 	baseURL := config.Global.AiAgent.BaseUrl
 	if baseURL == "" {
 		errMsg := "AIAGENT_BASE_URL 未配置，跳过 aiagent 调用"
-		log.Printf("[EmbedFile] %s", errMsg)
+		logger.Errorf("[EmbedFile] %s", errMsg)
 		reportAiAgentError(ctx, params, errMsg)
 		return
 	}
@@ -361,7 +370,7 @@ func callAiAgentEmbedFile(ctx context.Context, params map[string]any) {
 	reqBody, err := json.Marshal(params)
 	if err != nil {
 		errMsg := fmt.Sprintf("序列化请求参数失败: %v", err)
-		log.Printf("[EmbedFile] %s", errMsg)
+		logger.Errorf("[EmbedFile] %s", errMsg)
 		reportAiAgentError(ctx, params, errMsg)
 		return
 	}
@@ -371,7 +380,7 @@ func callAiAgentEmbedFile(ctx context.Context, params map[string]any) {
 		bytes.NewReader(reqBody))
 	if err != nil {
 		errMsg := fmt.Sprintf("创建 HTTP 请求失败: %v", err)
-		log.Printf("[EmbedFile] %s", errMsg)
+		logger.Errorf("[EmbedFile] %s", errMsg)
 		reportAiAgentError(ctx, params, errMsg)
 		return
 	}
@@ -381,7 +390,7 @@ func callAiAgentEmbedFile(ctx context.Context, params map[string]any) {
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		errMsg := fmt.Sprintf("调用 aiagent 失败: %v", err)
-		log.Printf("[EmbedFile] %s", errMsg)
+		logger.Errorf("[EmbedFile] %s", errMsg)
 		reportAiAgentError(ctx, params, errMsg)
 		return
 	}
@@ -389,11 +398,11 @@ func callAiAgentEmbedFile(ctx context.Context, params map[string]any) {
 
 	if resp.StatusCode != http.StatusOK {
 		errMsg := fmt.Sprintf("aiagent 返回非 200 状态码: %d", resp.StatusCode)
-		log.Printf("[EmbedFile] %s, file_id=%v", errMsg, params["file_id"])
+		logger.Errorf("[EmbedFile] %s, file_id=%v", errMsg, params["file_id"])
 		reportAiAgentError(ctx, params, errMsg)
 		return
 	}
-	log.Printf("[EmbedFile] 成功调用 aiagent: file_id=%v", params["file_id"])
+	logger.Infof("[EmbedFile] 成功调用 aiagent: file_id=%v", params["file_id"])
 }
 
 func callAiAgentDeleteEmbeddings(ctx context.Context, params map[string]any) {
@@ -403,13 +412,13 @@ func callAiAgentDeleteEmbeddings(ctx context.Context, params map[string]any) {
 
 	baseURL := config.Global.AiAgent.BaseUrl
 	if baseURL == "" {
-		log.Printf("[DeleteEmbeddings] AIAGENT_BASE_URL 未配置，跳过 Milvus 清理")
+		logger.Warnf("[DeleteEmbeddings] AIAGENT_BASE_URL 未配置，跳过 Milvus 清理")
 		return
 	}
 
 	reqBody, err := json.Marshal(params)
 	if err != nil {
-		log.Printf("[DeleteEmbeddings] 序列化请求参数失败: %v", err)
+		logger.Errorf("[DeleteEmbeddings] 序列化请求参数失败: %v", err)
 		return
 	}
 
@@ -417,7 +426,7 @@ func callAiAgentDeleteEmbeddings(ctx context.Context, params map[string]any) {
 		baseURL+"/guineapig-aiagent/rag/delete-embeddings",
 		bytes.NewReader(reqBody))
 	if err != nil {
-		log.Printf("[DeleteEmbeddings] 创建 HTTP 请求失败: %v", err)
+		logger.Errorf("[DeleteEmbeddings] 创建 HTTP 请求失败: %v", err)
 		return
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
@@ -425,38 +434,38 @@ func callAiAgentDeleteEmbeddings(ctx context.Context, params map[string]any) {
 	client := utils.NewHTTPClient(30 * time.Second)
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		log.Printf("[DeleteEmbeddings] 调用 aiagent 删除嵌入失败: %v", err)
+		logger.Errorf("[DeleteEmbeddings] 调用 aiagent 删除嵌入失败: %v", err)
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		log.Printf("[DeleteEmbeddings] aiagent 返回非 200 状态码: %d, file_id=%v", resp.StatusCode, params["file_id"])
+		logger.Errorf("[DeleteEmbeddings] aiagent 返回非 200 状态码: %d, file_id=%v", resp.StatusCode, params["file_id"])
 		return
 	}
-	log.Printf("[DeleteEmbeddings] 成功删除 Milvus 嵌入: file_id=%v", params["file_id"])
+	logger.Infof("[DeleteEmbeddings] 成功删除 Milvus 嵌入: file_id=%v", params["file_id"])
 }
 
 // reportAiAgentError 当 aiagent 调用失败时，更新 is_embedded=9 并记录错误信息
 func reportAiAgentError(ctx context.Context, params map[string]any, errMsg string) {
 	fileID, ok := params["file_id"].(int64)
 	if !ok {
-		log.Printf("[EmbedFile] 无法获取 file_id 参数（类型断言失败）")
+		logger.Errorf("[EmbedFile] 无法获取 file_id 参数（类型断言失败）")
 		return
 	}
 	taskID, _ := params["task_id"].(string)
 
 	// 更新 is_embedded = 9 (嵌入失败)
 	if err := model.MResFiles.UpdateIsEmbedded(ctx, fileID, model.IsEmbeddedFailed); err != nil {
-		log.Printf("[EmbedFile] 更新 is_embedded 失败状态出错: %v", err)
+		logger.Errorf("[EmbedFile] 更新 is_embedded 失败状态出错: %v", err)
 	}
 
 	// 更新 embedding_config 记录错误信息
 	if err := updateFileEmbedError(ctx, fileID, errMsg); err != nil {
-		log.Printf("[EmbedFile] 更新 embedding_config 错误信息出错: %v", err)
+		logger.Errorf("[EmbedFile] 更新 embedding_config 错误信息出错: %v", err)
 	}
 
-	log.Printf("[EmbedFile] 已记录 aiagent 调用失败: file_id=%d, task_id=%s, error=%s", fileID, taskID, errMsg)
+	logger.Errorf("[EmbedFile] 已记录 aiagent 调用失败: file_id=%d, task_id=%s, error=%s", fileID, taskID, errMsg)
 }
 
 // updateFileEmbeddingProgress 更新文件 embedding_config 中的进度值（公共 helper）

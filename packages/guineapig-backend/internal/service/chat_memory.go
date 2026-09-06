@@ -14,7 +14,6 @@ import (
 	"guineapig/pkg/plugin/logger"
 	"guineapig/pkg/utils"
 	"io"
-	"log"
 	"net/http"
 	"time"
 
@@ -299,7 +298,7 @@ func CreateMemorySummary(ctx context.Context, req *request.MemorySummarizeReques
 	// 5b. 查询过去15天的已有记忆（用于 LLM 融合参考）
 	pastMemories, err := model.MChatMemory.ListRecentActive(ctx, req.UserId, 15)
 	if err != nil {
-		log.Printf("查询已有记忆失败（忽略）: %v", err)
+		logger.Warnf("[Memory] 查询已有记忆失败（忽略）: user_id=%d, err=%v", req.UserId, err)
 	}
 	existingBriefs := make([]*MemoryBrief, 0, len(pastMemories))
 	memTruncateLimit := map[string]int{
@@ -384,14 +383,14 @@ func CreateMemorySummary(ctx context.Context, req *request.MemorySummarizeReques
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				log.Printf("panic in forwardToAiAgent: %v", r)
+				logger.Errorf("[Memory] panic in forwardToAiAgent: %v", r)
 			}
 		}()
 		// 后台任务 context：整体 5min 超时，避免 goroutine 悬挂
 		forwardCtx, cancel := context.WithTimeout(context.Background(), utils.AsyncTaskTimeout)
 		defer cancel()
 		if err := forwardToAiAgent(forwardCtx, aiAgentReq); err != nil {
-			log.Printf("转发记忆归纳到 aiagent 失败: %v", err)
+			logger.Errorf("[Memory] 转发记忆归纳到 aiagent 失败: %v", err)
 		}
 	}()
 

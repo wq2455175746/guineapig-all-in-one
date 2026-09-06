@@ -44,7 +44,9 @@ func handleBotMessage(ctx context.Context, msg *bot.BotMessage) error {
 		errReply := &bot.BotReply{
 			Text: fmt.Sprintf("🤖 处理消息时出错，请稍后重试"),
 		}
-		_ = BotManagerInstance.SendMessage(msg.Platform, msg.BotUserID, msg.ExtChatID, errReply)
+		if err := BotManagerInstance.SendMessage(msg.Platform, msg.BotUserID, msg.ExtChatID, errReply); err != nil {
+			logger.Errorf("[Bot] 发送错误提示消息失败: platform=%s, user_id=%d, err=%v", msg.Platform, msg.BotUserID, err)
+		}
 		return err
 	}
 
@@ -124,7 +126,9 @@ func BindBot(ctx context.Context, req *request.BotBindRequest) (*response.BotBin
 	if err := startBotForBinding(ctx, binding); err != nil {
 		logger.Errorf("[BotBind] 启动 Bot 失败: user_id=%d, platform=%s, err=%v",
 			req.UserId, req.Platform, err)
-		_ = binding.UpdateStatus(ctx, 2) // 连接失败
+		if uerr := binding.UpdateStatus(ctx, 2); uerr != nil { // 连接失败
+			logger.Errorf("[BotBind] 更新连接失败状态出错: binding_id=%d, err=%v", binding.Id, uerr)
+		}
 		return &response.BotBindResponse{
 			Id:        binding.Id,
 			Platform:  binding.Platform,
@@ -132,7 +136,9 @@ func BindBot(ctx context.Context, req *request.BotBindRequest) (*response.BotBin
 		}, nil
 	}
 
-	_ = binding.UpdateStatus(ctx, 1) // 已连接
+	if err := binding.UpdateStatus(ctx, 1); err != nil { // 已连接
+		logger.Errorf("[BotBind] 更新已连接状态失败: binding_id=%d, err=%v", binding.Id, err)
+	}
 	return &response.BotBindResponse{
 		Id:        binding.Id,
 		Platform:  binding.Platform,
@@ -253,7 +259,9 @@ func StartupBots(ctx context.Context) {
 			if err := startBotForBinding(ctx, binding); err != nil {
 				logger.Warnf("[StartupBots] 启动 Bot 失败: user_id=%d, platform=%s, err=%v",
 					binding.UserId, binding.Platform, err)
-				_ = binding.UpdateStatus(ctx, 2)
+				if uerr := binding.UpdateStatus(ctx, 2); uerr != nil {
+					logger.Errorf("[StartupBots] 更新连接失败状态出错: binding_id=%d, err=%v", binding.Id, uerr)
+				}
 			}
 		}
 	}

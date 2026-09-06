@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"gorm.io/gorm"
 )
 
 // ========== 常量 ==========
@@ -79,6 +80,7 @@ func (c *ClientConnection) Close() {
 		close(c.done)
 	})
 	if c.Conn != nil {
+		// best-effort 关闭：连接可能已被对端关闭，Close 报错无操作意义
 		_ = c.Conn.Close()
 	}
 }
@@ -290,7 +292,9 @@ func (h *Hub) handleChatSend(client *ClientConnection, env *response.WSEnvelope)
 	})
 
 	// 4. 保存用户配置到 Redis（供飞书等外部渠道读取）
-	_ = SetUserChatConfig(ctx, client.UserID, req.ModelId, req.WebSearchEnabled, req.AgentModeEnabled)
+	if err := SetUserChatConfig(ctx, client.UserID, req.ModelId, req.WebSearchEnabled, req.AgentModeEnabled); err != nil {
+		logger.Warnf("[Hub] 保存用户聊天配置失败: user_id=%d, err=%v", client.UserID, err)
+	}
 
 	// 5. 异步流式回复
 	go h.streamAssistantReply(ctx, client, req, msgResp)
@@ -360,7 +364,9 @@ func (h *Hub) streamAssistantReply(ctx context.Context, client *ClientConnection
 	// 3. 构建 LLM 上下文
 	llmMessages, err := buildLLMMessages(aiCtx, conversation)
 	if err != nil {
-		_ = updateMessageStatus(writeCtx, assistantMsgID, "error", fmt.Sprintf("构建上下文失败: %v", err))
+		if uerr := updateMessageStatus(writeCtx, assistantMsgID, "error", fmt.Sprintf("构建上下文失败: %v", err)); uerr != nil {
+			logger.Errorf("[Hub] 构建上下文失败更新消息状态出错: message_id=%d, err=%v", assistantMsgID, uerr)
+		}
 		h.sendError(client, fmt.Sprintf("构建上下文失败: %v", err))
 		return
 	}
@@ -368,7 +374,9 @@ func (h *Hub) streamAssistantReply(ctx context.Context, client *ClientConnection
 	// 4. 加载模型配置
 	modelConfig, err := loadModelConfig(aiCtx, conversation.ModelId, client.UserID)
 	if err != nil {
-		_ = updateMessageStatus(writeCtx, assistantMsgID, "error", fmt.Sprintf("加载模型配置失败: %v", err))
+		if uerr := updateMessageStatus(writeCtx, assistantMsgID, "error", fmt.Sprintf("加载模型配置失败: %v", err)); uerr != nil {
+			logger.Errorf("[Hub] 加载模型配置失败更新消息状态出错: message_id=%d, err=%v", assistantMsgID, uerr)
+		}
 		h.sendError(client, fmt.Sprintf("加载模型配置失败: %v", err))
 		return
 	}
@@ -385,7 +393,10 @@ func (h *Hub) streamAssistantReply(ctx context.Context, client *ClientConnection
 		}
 	}
 
-	ragContext, _ := resolveRagContextFromLatestMessage(aiCtx, convID, client.UserID)
+	ragContext, ragErr := resolveRagContextFromLatestMessage(aiCtx, convID, client.UserID)
+	if ragErr != nil {
+		logger.Warnf("[Hub] 解析 RAG 上下文失败: conversation_id=%d, user_id=%d, err=%v", convID, client.UserID, ragErr)
+	}
 
 	var commands []response.CommandItem
 	var fullContent string
@@ -396,24 +407,34 @@ func (h *Hub) streamAssistantReply(ctx context.Context, client *ClientConnection
 
 	// 7. 处理结果
 	if proxyErr != nil {
-		_ = updateMessageStatus(writeCtx, assistantMsgID, "error", proxyErr.Error())
+		if uerr := updateMessageStatus(writeCtx, assistantMsgID, "error", proxyErr.Error()); uerr != nil {
+			logger.Errorf("[Hub] 流式失败更新消息状态出错: message_id=%d, err=%v", assistantMsgID, uerr)
+		}
 		h.sendError(client, proxyErr.Error())
 	} else {
 		// 保存 commands
 		if len(commands) > 0 {
-			cmdJSON, _ := json.Marshal(commands)
-			cmdStr := string(cmdJSON)
-			_ = model.MChatMessage.UpdateCommands(writeCtx, assistantMsgID, &cmdStr)
+			cmdJSON, err := json.Marshal(commands)
+			if err != nil {
+				logger.Errorf("[Hub] 序列化 commands 失败: message_id=%d, err=%v", assistantMsgID, err)
+			} else {
+				cmdStr := string(cmdJSON)
+				if uerr := model.MChatMessage.UpdateCommands(writeCtx, assistantMsgID, &cmdStr); uerr != nil {
+					logger.Errorf("[Hub] 保存 commands 失败: message_id=%d, err=%v", assistantMsgID, uerr)
+				}
+			}
 		}
 
 		// 更新 MySQL
-		_ = plugin.GetDB(writeCtx).Model(&model.ChatMessage{}).
+		if uerr := plugin.GetDB(writeCtx).Model(&model.ChatMessage{}).
 			Where("id = ?", assistantMsgID).
 			Updates(map[string]any{
 				"content":    fullContent,
 				"status":     "completed",
 				"updated_at": time.Now(),
-			}).Error
+			}).Error; uerr != nil {
+			logger.Errorf("[Hub] 更新助手消息失败: message_id=%d, err=%v", assistantMsgID, uerr)
+		}
 
 		// 发送完成事件（只在有命令时才携带 commands，避免已通过 chat.command 转发后重复弹出对话框）
 		donePayload := map[string]any{
@@ -437,9 +458,11 @@ func (h *Hub) streamAssistantReply(ctx context.Context, client *ClientConnection
 	}
 
 	// 8. 清理（defer cleanup）+ 会话状态更新
-	_ = plugin.GetDB(writeCtx).Model(&model.ChatConversation{}).
+	if err := plugin.GetDB(writeCtx).Model(&model.ChatConversation{}).
 		Where("id = ?", convID).
-		UpdateColumn("message_count", 1).Error
+		UpdateColumn("message_count", gorm.Expr("message_count + 1")).Error; err != nil {
+		logger.Errorf("[Hub] 更新会话消息计数失败: conversation_id=%d, err=%v", convID, err)
+	}
 	updateContextCache(writeCtx, client.UserID, convID)
 	updateLastActive(writeCtx, client.UserID, convID)
 }
@@ -483,7 +506,10 @@ func (h *Hub) proxyAiAgentStream(
 		reqMap["rag_context"] = ragContext
 	}
 
-	reqBody, _ := json.Marshal(reqMap)
+	reqBody, err := json.Marshal(reqMap)
+	if err != nil {
+		return "", nil, fmt.Errorf("序列化 aiagent 请求失败: %w", err)
+	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		baseURL+"/guineapig-aiagent/llm/chat/stream",
@@ -657,7 +683,9 @@ func (h *Hub) handleCommandResult(client *ClientConnection, env *response.WSEnve
 	// 5. 构建 LLM 上下文（不含当前轮结果）
 	llmMessages, err := buildLLMMessages(aiCtx, conversation)
 	if err != nil {
-		_ = updateMessageStatus(writeCtx, assistantMsgID, "error", fmt.Sprintf("构建上下文失败: %v", err))
+		if uerr := updateMessageStatus(writeCtx, assistantMsgID, "error", fmt.Sprintf("构建上下文失败: %v", err)); uerr != nil {
+			logger.Errorf("[Hub] 构建上下文失败更新消息状态出错: message_id=%d, err=%v", assistantMsgID, uerr)
+		}
 		h.sendError(client, fmt.Sprintf("构建上下文失败: %v", err))
 		return
 	}
@@ -668,7 +696,9 @@ func (h *Hub) handleCommandResult(client *ClientConnection, env *response.WSEnve
 	// 7. 加载模型配置
 	modelConfig, err := loadModelConfig(aiCtx, conversation.ModelId, client.UserID)
 	if err != nil {
-		_ = updateMessageStatus(writeCtx, assistantMsgID, "error", fmt.Sprintf("加载模型配置失败: %v", err))
+		if uerr := updateMessageStatus(writeCtx, assistantMsgID, "error", fmt.Sprintf("加载模型配置失败: %v", err)); uerr != nil {
+			logger.Errorf("[Hub] 加载模型配置失败更新消息状态出错: message_id=%d, err=%v", assistantMsgID, uerr)
+		}
 		h.sendError(client, fmt.Sprintf("加载模型配置失败: %v", err))
 		return
 	}
@@ -684,31 +714,44 @@ func (h *Hub) handleCommandResult(client *ClientConnection, env *response.WSEnve
 			})
 		}
 	}
-	ragContext, _ := resolveRagContextFromLatestMessage(aiCtx, convID, client.UserID)
+	ragContext, ragErr := resolveRagContextFromLatestMessage(aiCtx, convID, client.UserID)
+	if ragErr != nil {
+		logger.Warnf("[Hub] 解析 RAG 上下文失败: conversation_id=%d, user_id=%d, err=%v", convID, client.UserID, ragErr)
+	}
 
 	// 9. 调用 aiagent SSE 流
 	fullContent, commands, proxyErr := h.proxyAiAgentStream(aiCtx, convID, assistantMsgID, llmMessages, modelConfig, skills, client.UserID, false, ragContext, client)
 
 	// 10. 处理结果
 	if proxyErr != nil {
-		_ = updateMessageStatus(writeCtx, assistantMsgID, "error", proxyErr.Error())
+		if uerr := updateMessageStatus(writeCtx, assistantMsgID, "error", proxyErr.Error()); uerr != nil {
+			logger.Errorf("[Hub] 流式失败更新消息状态出错: message_id=%d, err=%v", assistantMsgID, uerr)
+		}
 		h.sendError(client, proxyErr.Error())
 	} else {
 		// 保存 commands
 		if len(commands) > 0 {
-			cmdJSON, _ := json.Marshal(commands)
-			cmdStr := string(cmdJSON)
-			_ = model.MChatMessage.UpdateCommands(writeCtx, assistantMsgID, &cmdStr)
+			cmdJSON, err := json.Marshal(commands)
+			if err != nil {
+				logger.Errorf("[Hub] 序列化 commands 失败: message_id=%d, err=%v", assistantMsgID, err)
+			} else {
+				cmdStr := string(cmdJSON)
+				if uerr := model.MChatMessage.UpdateCommands(writeCtx, assistantMsgID, &cmdStr); uerr != nil {
+					logger.Errorf("[Hub] 保存 commands 失败: message_id=%d, err=%v", assistantMsgID, uerr)
+				}
+			}
 		}
 
 		// 更新 MySQL
-		_ = plugin.GetDB(writeCtx).Model(&model.ChatMessage{}).
+		if uerr := plugin.GetDB(writeCtx).Model(&model.ChatMessage{}).
 			Where("id = ?", assistantMsgID).
 			Updates(map[string]any{
 				"content":    fullContent,
 				"status":     "completed",
 				"updated_at": time.Now(),
-			}).Error
+			}).Error; uerr != nil {
+			logger.Errorf("[Hub] 更新助手消息失败: message_id=%d, err=%v", assistantMsgID, uerr)
+		}
 
 		// 发送完成事件
 		donePayload := map[string]any{
@@ -732,9 +775,11 @@ func (h *Hub) handleCommandResult(client *ClientConnection, env *response.WSEnve
 	}
 
 	// 11. 更新会话
-	_ = plugin.GetDB(writeCtx).Model(&model.ChatConversation{}).
+	if err := plugin.GetDB(writeCtx).Model(&model.ChatConversation{}).
 		Where("id = ?", convID).
-		UpdateColumn("message_count", 1).Error
+		UpdateColumn("message_count", gorm.Expr("message_count + 1")).Error; err != nil {
+		logger.Errorf("[Hub] 更新会话消息计数失败: conversation_id=%d, err=%v", convID, err)
+	}
 	updateContextCache(writeCtx, client.UserID, convID)
 	updateLastActive(writeCtx, client.UserID, convID)
 }

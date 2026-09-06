@@ -1,6 +1,7 @@
 port: 6880
 version: 1.0
-debug: true
+# debug 由环境变量 DEBUG 控制（默认 false），避免启动时打印含密钥配置
+debug: false
 jwtSecret: ${JWT_SECRET}
 registerCode: ${REGISTER_CODE}
 database:
@@ -16,6 +17,11 @@ redis:
   db: 0
 admin:
   token: ${ADMIN_TOKEN}
+
+# CORS 允许的前端域名白名单（逗号分隔）
+corsHosts: "http://guineapig-ops-web.local:5173,http://guineapig-client.local:5174"
+# CORS 允许的自定义请求头白名单（逗号分隔），与内置标准头合并
+corsHeaders: "X-Device-Id,X-User-Id,X-User-Token,X-Request-Id,X-Admin-Token,X-Inner-Token"
 
 # 内部服务（aiagent 等）回调鉴权
 inner:
@@ -38,5 +44,14 @@ s3:
   presignExpiryMinute: 15
   forcePathStyle: true
 
+# 限流配置
+# type: memory | redis（默认 redis）
+# enableConcurrency: 是否开启接口并发限制（开启后需在 concurrency 下按路由 path 配置上限）
+# enableQps: QPS 限流，当前中间件尚未接线，保留字段仅供后续实现
 rateLimiter:
+  type: redis
+  enableConcurrency: false
+  concurrency: {}
+  enableQps: false
+  qps: {}
   botQps: 5

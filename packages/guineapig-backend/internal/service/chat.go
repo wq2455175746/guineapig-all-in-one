@@ -11,11 +11,14 @@ import (
 	"guineapig/internal/request"
 	"guineapig/internal/response"
 	"guineapig/pkg/plugin"
+	"guineapig/pkg/plugin/logger"
 	"guineapig/pkg/utils"
 	"io"
 	"net/http"
 	"strings"
 	"time"
+
+	"gorm.io/gorm"
 )
 
 // SendChatMessage 创建会话 + 用户消息，如为音频则调用 aiagent ASR 解析后返回
@@ -50,9 +53,11 @@ func SendChatMessage(ctx context.Context, req *request.ChatSendRequest) (*respon
 		}
 		// 更新会话时间
 		conversation.UpdatedAt = now
-		_ = plugin.GetDB(ctx).Model(&model.ChatConversation{}).
+		if err := plugin.GetDB(ctx).Model(&model.ChatConversation{}).
 			Where("id = ?", conversation.Id).
-			Update("updated_at", now).Error
+			Update("updated_at", now).Error; err != nil {
+			logger.Errorf("[SendChatMessage] 更新会话时间失败: conversation_id=%d, err=%v", conversation.Id, err)
+		}
 	} else {
 		// 创建新会话
 		title := req.Content
@@ -117,22 +122,28 @@ func SendChatMessage(ctx context.Context, req *request.ChatSendRequest) (*respon
 					// ASR 失败不阻断，记录错误状态
 					msg.Status = "error"
 					msg.ErrorMessage = fmt.Sprintf("ASR 识别失败: %v", err)
-					_ = updateMessageStatus(ctx, msg.Id, msg.Status, msg.ErrorMessage)
+					if uerr := updateMessageStatus(ctx, msg.Id, msg.Status, msg.ErrorMessage); uerr != nil {
+						logger.Errorf("[SendChatMessage] ASR 失败更新消息状态出错: message_id=%d, err=%v", msg.Id, uerr)
+					}
 				} else {
 					content = asrText
 					msg.Content = asrText
 					// 更新消息内容为 ASR 结果
-					_ = updateMessageContent(ctx, msg.Id, asrText)
+					if uerr := updateMessageContent(ctx, msg.Id, asrText); uerr != nil {
+						logger.Errorf("[SendChatMessage] 更新 ASR 消息内容失败: message_id=%d, err=%v", msg.Id, uerr)
+					}
 				}
 				break // 只处理第一个音频附件
 			}
 		}
 	}
 
-	// 5. 更新会话消息计数
-	_ = plugin.GetDB(ctx).Model(&model.ChatConversation{}).
+	// 5. 更新会话消息计数（原子自增，避免并发覆盖）
+	if err := plugin.GetDB(ctx).Model(&model.ChatConversation{}).
 		Where("id = ?", conversation.Id).
-		Update("message_count", 1).Error
+		UpdateColumn("message_count", gorm.Expr("message_count + 1")).Error; err != nil {
+		logger.Errorf("[SendChatMessage] 更新会话消息计数失败: conversation_id=%d, err=%v", conversation.Id, err)
+	}
 
 	// 6. 构建响应
 	respItems := make([]response.AttachmentItem, 0, len(req.Attachments))
@@ -164,9 +175,12 @@ func callAiAgentASR(ctx context.Context, objectKey string) (string, error) {
 		return "", errors.New("AIAGENT_BASE_URL 未配置")
 	}
 
-	reqBody, _ := json.Marshal(map[string]string{
+	reqBody, err := json.Marshal(map[string]string{
 		"objectKey": objectKey,
 	})
+	if err != nil {
+		return "", fmt.Errorf("序列化 ASR 请求失败: %w", err)
+	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		baseURL+"/guineapig-aiagent/asr/transcribe",

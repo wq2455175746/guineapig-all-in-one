@@ -121,6 +121,7 @@ func updateContextCache(ctx context.Context, userId, conversationId int64) {
 		Order("created_at DESC").
 		Limit(10).
 		Find(&msgs).Error; err != nil {
+		logger.Warnf("[ChatStream] 查询上下文缓存消息失败: conversation_id=%d, err=%v", conversationId, err)
 		return
 	}
 
@@ -128,29 +129,45 @@ func updateContextCache(ctx context.Context, userId, conversationId int64) {
 	ctxKey := fmt.Sprintf(RedisKeyContext, userId, conversationId)
 
 	pipe := rdb.Pipeline()
-	_ = pipe.Del(ctx, ctxKey).Err()
+	if err := pipe.Del(ctx, ctxKey).Err(); err != nil {
+		logger.Warnf("[ChatStream] 清空上下文缓存失败: conversation_id=%d, err=%v", conversationId, err)
+	}
 	// 逆序写入（chronological order）
 	for i := len(msgs) - 1; i >= 0; i-- {
 		m := msgs[i]
-		entry, _ := json.Marshal(map[string]string{
+		entry, err := json.Marshal(map[string]string{
 			"role":    m.Role,
 			"content": m.Content,
 		})
-		_ = pipe.RPush(ctx, ctxKey, entry).Err()
+		if err != nil {
+			logger.Warnf("[ChatStream] 序列化上下文缓存条目失败: message_id=%d, err=%v", m.Id, err)
+			continue
+		}
+		if err := pipe.RPush(ctx, ctxKey, entry).Err(); err != nil {
+			logger.Warnf("[ChatStream] 写入上下文缓存失败: conversation_id=%d, err=%v", conversationId, err)
+		}
 	}
-	_, _ = pipe.Exec(ctx)
-	_ = rdb.Expire(ctx, ctxKey, ContextCacheTTL).Err()
+	if _, err := pipe.Exec(ctx); err != nil {
+		logger.Warnf("[ChatStream] 提交上下文缓存失败: conversation_id=%d, err=%v", conversationId, err)
+	}
+	if err := rdb.Expire(ctx, ctxKey, ContextCacheTTL).Err(); err != nil {
+		logger.Warnf("[ChatStream] 设置上下文缓存过期时间失败: conversation_id=%d, err=%v", conversationId, err)
+	}
 }
 
 // updateLastActive 更新会话最后活跃时间（Sorted Set）
 func updateLastActive(ctx context.Context, userId, conversationId int64) {
 	rdb := plugin.GetClient()
 	key := fmt.Sprintf(RedisKeyLastActive, userId)
-	_ = rdb.ZAdd(ctx, key, redis.Z{
+	if err := rdb.ZAdd(ctx, key, redis.Z{
 		Score:  float64(time.Now().Unix()),
 		Member: conversationId,
-	}).Err()
-	_ = rdb.Expire(ctx, key, LastActiveTTL).Err()
+	}).Err(); err != nil {
+		logger.Warnf("[ChatStream] 更新最后活跃时间失败: conversation_id=%d, err=%v", conversationId, err)
+	}
+	if err := rdb.Expire(ctx, key, LastActiveTTL).Err(); err != nil {
+		logger.Warnf("[ChatStream] 设置最后活跃过期时间失败: conversation_id=%d, err=%v", conversationId, err)
+	}
 }
 
 // ========== RAG 上下文解析 ==========

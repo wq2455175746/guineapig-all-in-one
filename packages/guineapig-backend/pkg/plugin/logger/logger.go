@@ -15,41 +15,50 @@ func SetLogger(l *zap.Logger) {
 	log = l
 }
 
+// format 仅在传入参数时按 fmt 格式化；无参数时原样输出 msg，
+// 避免消息内容中的 `%` 被当作格式占位符导致日志损坏（如 `%!s(MISSING)`）。
+func format(msg string, a ...interface{}) string {
+	if len(a) == 0 {
+		return msg
+	}
+	return fmt.Sprintf(msg, a...)
+}
+
 func Infof(msg string, a ...interface{}) {
 	if log != nil {
-		log.Info(fmt.Sprintf(msg, a...))
+		log.Info(format(msg, a...))
 	}
 }
 
 func Warnf(msg string, a ...interface{}) {
 	if log != nil {
-		log.Warn(fmt.Sprintf(msg, a...))
+		log.Warn(format(msg, a...))
 	}
 }
 
 func Errorf(msg string, a ...interface{}) {
 	if log != nil {
-		log.Error(fmt.Sprintf(msg, a...))
+		log.Error(format(msg, a...))
 	}
 }
 
 func InfoReqIdf(ctx context.Context, msg string, a ...interface{}) {
 	if log != nil {
 		requestId := cast.ToString(ctx.Value("requestId"))
-		log.With(zap.String("traceId", requestId)).Info(fmt.Sprintf(msg, a...))
+		log.With(zap.String("traceId", requestId)).Info(format(msg, a...))
 	}
 }
 
 func ErrorReqIdf(ctx context.Context, msg string, a ...interface{}) {
 	if log != nil {
 		requestId := cast.ToString(ctx.Value("requestId"))
-		log.With(zap.String("traceId", requestId)).Error(fmt.Sprintf(msg, a...))
+		log.With(zap.String("traceId", requestId)).Error(format(msg, a...))
 	}
 }
 
 func WarnReqIdf(ctx context.Context, msg string, a ...interface{}) {
 	if log != nil {
 		requestId := cast.ToString(ctx.Value("requestId"))
-		log.With(zap.String("traceId", requestId)).Warn(fmt.Sprintf(msg, a...))
+		log.With(zap.String("traceId", requestId)).Warn(format(msg, a...))
 	}
 }
