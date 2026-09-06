@@ -125,6 +125,7 @@ services:
       LLM_BASE_URL: ${LLM_BASE_URL:-https://api.deepseek.com}
       LLM_MODEL_NAME: ${LLM_MODEL_NAME:-deepseek-chat}
       ADMIN_TOKEN: ${ADMIN_TOKEN}
+      INNER_TOKEN: ${INNER_TOKEN}
       CORS_ORIGINS: ${CORS_ORIGINS}
       BACKEND_BASE_URL: http://backend:6880
     volumes:
@@ -162,6 +163,7 @@ services:
       REDIS_PASSWORD: ${REDIS_PASSWORD}
       AIAGENT_BASE_URL: http://aiagent:8000
       ADMIN_TOKEN: ${ADMIN_TOKEN}
+      INNER_TOKEN: ${INNER_TOKEN}
       S3_BUCKET: guineapig
       S3_REGION: default
       S3_ENDPOINT: http://minio:9000

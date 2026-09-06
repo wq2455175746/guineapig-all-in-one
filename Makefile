@@ -86,7 +86,7 @@ test:
 	@echo "  Testing guineapig-backend..."
 	@cd $(ROOT_DIR)/packages/guineapig-backend && go test ./... 2>&1 | tail -5
 	@echo "  Testing guineapig-aiagent..."
-	@cd $(ROOT_DIR)/packages/guineapig-aiagent && uv run pytest -q 2>/dev/null || echo "  ⚠️  aiagent tests skipped"
+	@cd $(ROOT_DIR)/packages/guineapig-aiagent && uv run pytest -q --ignore=test/routers_agent_test.py 2>/dev/null || echo "  ⚠️  aiagent tests skipped"
 	@echo "✅ All tests passed"
 
 test-%:

@@ -118,6 +118,7 @@ services:
       REDIS_DB: 0
       MILVUS_HOST: ${MILVUS_HOST:-milvus-standalone}
       ADMIN_TOKEN: ${ADMIN_TOKEN:-guineapig-admin-dev-token}
+      INNER_TOKEN: ${INNER_TOKEN:-guineapig-inner-dev-token}
     volumes:
       - ./packages/guineapig-aiagent:/app
       - /app/.venv
@@ -164,6 +165,7 @@ services:
       REDIS_PASSWORD: guineapig_dev
       AIAGENT_BASE_URL: http://aiagent:8000
       ADMIN_TOKEN: ${ADMIN_TOKEN:-guineapig-admin-dev-token}
+      INNER_TOKEN: ${INNER_TOKEN:-guineapig-inner-dev-token}
       S3_BUCKET: guineapig
       S3_REGION: default
       S3_ENDPOINT: http://minio:9000

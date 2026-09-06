@@ -4,6 +4,8 @@ import (
 	"net"
 	"net/http"
 	"time"
+
+	"guineapig/config"
 )
 
 // sharedHTTPTransport 全局共享的 HTTP transport（连接池复用）。
@@ -30,5 +32,15 @@ func NewHTTPClient(timeout time.Duration) *http.Client {
 	return &http.Client{
 		Transport: sharedHTTPTransport,
 		Timeout:   timeout,
+	}
+}
+
+// AttachAiAgentAuth 为发往 guineapig-aiagent 的出站请求附加管理令牌头。
+// aiagent 的鉴权中间件为 fail-closed：除白名单外的所有接口都要求 X-Admin-Token，
+// 缺失即 401。这里从 config.Global.Admin.Token 读取（config.yaml admin.token ← ADMIN_TOKEN），
+// 与 docker-compose 中 aiagent 的 ADMIN_TOKEN 保持同值，从而恢复 backend→aiagent 运行时链路。
+func AttachAiAgentAuth(req *http.Request) {
+	if token := config.Global.Admin.Token; token != "" {
+		req.Header.Set("X-Admin-Token", token)
 	}
 }

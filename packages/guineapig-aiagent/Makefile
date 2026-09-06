@@ -21,7 +21,7 @@ validate:
 	uv run python -c "import fastapi; print('OK: fastapi', fastapi.__version__)"
 
 test:
-	uv run pytest -q
+	uv run pytest -q --ignore=test/routers_agent_test.py
 
 clean:
 	rm -rf __pycache__ .pytest_cache

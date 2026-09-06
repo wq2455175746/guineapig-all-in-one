@@ -519,6 +519,7 @@ func (h *Hub) proxyAiAgentStream(
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
+	utils.AttachAiAgentAuth(httpReq)
 
 	httpClient := utils.NewHTTPClient(120 * time.Second) // 2min（单轮 LLM 调用）
 	resp, err := httpClient.Do(httpReq)

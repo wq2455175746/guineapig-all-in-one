@@ -121,7 +121,8 @@ func addAdminRouter(method, path string, fn echo.HandlerFunc) {
 	})
 }
 
-// addInnerRouter 注册内部服务调用 API（供 aiagent 回调），路径前缀为 /inner/api/v1，无需鉴权
+// addInnerRouter 注册内部服务调用 API（供 aiagent 回调），路径前缀为 /inner/api/v1。
+// 鉴权由 Auth 中间件统一处理：/inner/api/v1/* 需携带 X-Inner-Token（fail-closed）。
 func addInnerRouter(method, path string, fn echo.HandlerFunc) {
 	routers = append(routers, Router{
 		Method:   method,
@@ -168,7 +169,9 @@ func registerAdminRoutes() {
 	addAdminRouter(echo.GET, "/bot/list", botRouter.AdminList)
 }
 
-// registerInnerRoutes 注册内部服务调用 API（供 aiagent 回调），路径前缀为 /inner/api/v1
+// registerInnerRoutes 注册内部服务调用 API（供 aiagent 回调），路径前缀为 /inner/api/v1。
+// 注意：这些路由需携带 X-Inner-Token（由 Auth 中间件校验，fail-closed），
+// 因此 aiagent 需配置与 backend 一致的 INNER_TOKEN 才能正常回调。
 func registerInnerRoutes() {
 	// 文件嵌入进度回调
 	addInnerRouter(echo.POST, "/file/embed-progress", fileRouter.EmbedProgress)

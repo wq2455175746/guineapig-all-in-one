@@ -9,7 +9,9 @@ import (
 	"guineapig/internal/model"
 	"guineapig/internal/request"
 	"guineapig/internal/response"
+	"guineapig/internal/router/common"
 	"guineapig/pkg/auth"
+	"guineapig/pkg/constant"
 	"guineapig/pkg/plugin/logger"
 	"guineapig/pkg/utils"
 )
@@ -175,7 +177,7 @@ func ClientLogin(ctx context.Context, req *request.ClientLoginRequest) (*respons
 		}
 	}
 	if apiKeyRecord == nil {
-		return nil, errors.New("api_key 不存在或已禁用")
+		return nil, common.BizError(constant.ParamErr, "api_key 不存在或已禁用")
 	}
 
 	// 3. 根据 user_id 查找用户信息

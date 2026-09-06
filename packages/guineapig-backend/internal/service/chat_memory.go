@@ -10,6 +10,8 @@ import (
 	"guineapig/internal/model"
 	"guineapig/internal/request"
 	"guineapig/internal/response"
+	"guineapig/internal/router/common"
+	"guineapig/pkg/constant"
 	"guineapig/pkg/plugin"
 	"guineapig/pkg/plugin/logger"
 	"guineapig/pkg/utils"
@@ -146,7 +148,7 @@ func GetMemory(ctx context.Context, id int64, requesterUserID int64) (*response.
 		return nil, errors.New("记忆不存在")
 	}
 	if requesterUserID > 0 && m.UserId != requesterUserID {
-		return nil, errors.New("无权访问该记忆")
+		return nil, common.BizError(constant.ParamErr, "无权访问该记忆")
 	}
 
 	return &response.MemoryItem{
@@ -419,6 +421,7 @@ func forwardToAiAgent(ctx context.Context, req *AiAgentMemoryRequest) error {
 		return fmt.Errorf("创建请求失败: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	utils.AttachAiAgentAuth(httpReq)
 
 	client := utils.NewHTTPClient(30 * time.Second)
 	resp, err := client.Do(httpReq)

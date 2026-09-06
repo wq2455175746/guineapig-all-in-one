@@ -168,6 +168,7 @@ func callAiAgentSkillProcess(ctx context.Context, objectKey string) (*SkillAiAge
 		return nil, fmt.Errorf("创建 skill 解析请求失败: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	utils.AttachAiAgentAuth(httpReq)
 
 	client := utils.NewHTTPClient(120 * time.Second)
 	resp, err := client.Do(httpReq)

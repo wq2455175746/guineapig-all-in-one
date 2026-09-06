@@ -209,6 +209,7 @@ func callAiAgentLLM(ctx context.Context, modelConfig *ModelConfig, messages []ma
 		return "", fmt.Errorf("创建请求失败: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	utils.AttachAiAgentAuth(httpReq)
 
 	client := utils.NewHTTPClient(120 * time.Second)
 	resp, err := client.Do(httpReq)

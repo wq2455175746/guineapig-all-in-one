@@ -256,6 +256,29 @@ ipcMain.handle('get-app-state', () => {
   return { isDev }
 })
 
+/**
+ * 获取 RSA 公钥内容（登录加密用）
+ * - 开发模式：读取项目 public/public.key（Vite 以站点根服务 /public.key）
+ * - 打包模式：从 extraResources 拷贝的 resources/public/public.key 读取
+ *   （打包后 renderer 以 file:// 加载，fetch('/public.key') 不可用）
+ */
+ipcMain.handle('get-public-key', async () => {
+  const candidates = isDev
+    ? [path.join(__dirname, '../../public/public.key')]
+    : [path.join(process.resourcesPath, 'public', 'public.key')]
+
+  for (const p of candidates) {
+    try {
+      if (fs.existsSync(p)) {
+        return fs.readFileSync(p, 'utf-8')
+      }
+    } catch (err) {
+      logger.error(`读取公钥失败: ${p}, ${err}`)
+    }
+  }
+  throw new Error('public.key 不存在')
+})
+
 // ==================== IPC 通信处理 ====================
 
 ipcMain.handle('show-dialog', async (_event, options) => {

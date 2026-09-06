@@ -385,6 +385,7 @@ func callAiAgentEmbedFile(ctx context.Context, params map[string]any) {
 		return
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	utils.AttachAiAgentAuth(httpReq)
 
 	client := utils.NewHTTPClient(30 * time.Second)
 	resp, err := client.Do(httpReq)
@@ -430,6 +431,7 @@ func callAiAgentDeleteEmbeddings(ctx context.Context, params map[string]any) {
 		return
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	utils.AttachAiAgentAuth(httpReq)
 
 	client := utils.NewHTTPClient(30 * time.Second)
 	resp, err := client.Do(httpReq)

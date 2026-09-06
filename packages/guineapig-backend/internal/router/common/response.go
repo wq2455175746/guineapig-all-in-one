@@ -21,6 +21,17 @@ func (e *CustomError) Error() string {
 	return fmt.Sprintf("code: %d, message: %s, detail: %s", e.Code, e.Message, e.Detail)
 }
 
+// BizError 构造业务错误（IDOR / 校验等用户可见错误）。
+// 返回的 *CustomError 会被 ResponseServerError 的 errors.As 命中，
+// 从而把用户可读的 message 透出，而不会被当作内部错误屏蔽为"系统错误"。
+func BizError(code int, msg string) error {
+	return &CustomError{
+		Code:    code,
+		Message: msg,
+		Detail:  msg,
+	}
+}
+
 // ResponseServerError code是200
 func ResponseServerError(e echo.Context, err error) error {
 	requestId := cast.ToString(e.Get("requestId"))
@@ -101,6 +112,23 @@ func ResponseParamError(e echo.Context, err error) error {
 		Code:      constant.ParamErr,
 		Message:   constant.ParamErrMsg,
 		Detail:    detail,
+		RequestId: requestId,
+	})
+}
+
+// ResponseForbidden 权限不足响应（code 200 业务码，透出用户可读 message）。
+func ResponseForbidden(e echo.Context, err error) error {
+	requestId := cast.ToString(e.Get("requestId"))
+	e.Response().Header().Set(echo.HeaderXRequestID, requestId)
+
+	msg := "无权操作"
+	if err != nil {
+		msg = err.Error()
+	}
+	return e.JSON(http.StatusOK, CustomError{
+		Code:      constant.ParamErr,
+		Message:   msg,
+		Detail:    msg,
 		RequestId: requestId,
 	})
 }

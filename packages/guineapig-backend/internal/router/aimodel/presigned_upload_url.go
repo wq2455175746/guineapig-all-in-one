@@ -1,6 +1,7 @@
 package aimodel
 
 import (
+	"errors"
 	"fmt"
 	"guineapig/internal/router/common"
 	"guineapig/internal/service"
@@ -39,6 +40,15 @@ func PresignedDownloadURL(e echo.Context) error {
 	key := e.QueryParam("key")
 	if key == "" {
 		return common.ResponseParamError(e, nil)
+	}
+
+	// 预签名下载是资源读取的唯一路径：S3 key 内嵌用户 id（{prefix}/{user_id}/...）。
+	// 仅允许下载属于当前用户会话的对象；admin / inner 会话（CurrentUserID==0）放行。
+	if uid := gdMid.CurrentUserID(e); uid > 0 {
+		keyUID := utils.KeyOwnerUserID(key)
+		if keyUID <= 0 || keyUID != uid {
+			return common.ResponseForbidden(e, errors.New("无权访问该资源"))
+		}
 	}
 
 	resp, err := service.GeneratePresignedDownloadURL(ctx, key)

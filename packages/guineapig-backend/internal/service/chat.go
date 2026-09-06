@@ -10,6 +10,8 @@ import (
 	"guineapig/internal/model"
 	"guineapig/internal/request"
 	"guineapig/internal/response"
+	"guineapig/internal/router/common"
+	"guineapig/pkg/constant"
 	"guineapig/pkg/plugin"
 	"guineapig/pkg/plugin/logger"
 	"guineapig/pkg/utils"
@@ -49,7 +51,7 @@ func SendChatMessage(ctx context.Context, req *request.ChatSendRequest) (*respon
 		}
 		// 会话属主校验（req.UserId 已由鉴权中间件覆盖为 Token 身份）
 		if conversation.UserId != req.UserId {
-			return nil, errors.New("无权操作该会话")
+			return nil, common.BizError(constant.ParamErr, "无权操作该会话")
 		}
 		// 更新会话时间
 		conversation.UpdatedAt = now
@@ -189,6 +191,7 @@ func callAiAgentASR(ctx context.Context, objectKey string) (string, error) {
 		return "", fmt.Errorf("创建 ASR 请求失败: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	utils.AttachAiAgentAuth(httpReq)
 
 	client := utils.NewHTTPClient(60 * time.Second)
 	resp, err := client.Do(httpReq)

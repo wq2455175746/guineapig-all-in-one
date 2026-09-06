@@ -92,6 +92,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getAppState: () => ipcRenderer.invoke('get-app-state'),
 
   /**
+   * 获取 RSA 公钥内容（登录加密用）
+   * 打包环境以 file:// 加载 renderer，fetch('/public.key') 不可用，故由主进程读取后透传
+   */
+  getPublicKey: () => ipcRenderer.invoke('get-public-key'),
+
+  /**
    * 用系统默认应用打开外部链接（http/https 及自定义协议如 amapuri://）
    */
   openExternal: (url: string) => ipcRenderer.invoke('open-external', url),

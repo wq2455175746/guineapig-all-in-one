@@ -263,6 +263,12 @@ interface Window {
      * 获取应用运行状态（如 isDev，用于 DevTools 快捷键等开发功能开关）
      */
     getAppState: () => Promise<{ isDev: boolean }>
+
+    /**
+     * 获取 RSA 公钥内容（登录加密用）
+     * 打包环境以 file:// 加载 renderer，fetch('/public.key') 不可用，故由主进程读取后透传
+     */
+    getPublicKey: () => Promise<string>
   }
 }
 

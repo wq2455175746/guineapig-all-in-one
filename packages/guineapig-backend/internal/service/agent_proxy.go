@@ -62,6 +62,7 @@ func (h *Hub) proxyAiAgentAgentStream(
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
+	utils.AttachAiAgentAuth(httpReq)
 
 	httpClient := utils.NewHTTPClient(300 * time.Second) // 5min（多步 DAG 执行）
 	resp, err := httpClient.Do(httpReq)
@@ -611,6 +612,7 @@ func (h *Hub) callAiAgentAgentControl(path string, body map[string]any) error {
 		return fmt.Errorf("创建控制请求失败: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	utils.AttachAiAgentAuth(httpReq)
 
 	httpClient := utils.NewHTTPClient(10 * time.Second)
 	resp, err := httpClient.Do(httpReq)
