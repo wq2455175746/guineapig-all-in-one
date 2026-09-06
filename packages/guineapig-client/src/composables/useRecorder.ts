@@ -1,8 +1,22 @@
 import { ref } from 'vue'
 import { useToast } from 'primevue/usetoast'
 import { encodePcmToMp3 } from './mp3Encoder'
+import recorderWorkletSource from '../audio/recorder-worklet.js?raw'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:6880'
+
+// AudioWorklet 模块以 data: URL 内联加载：
+// 1. 生产环境 Electron 通过 loadFile 以 file:// 加载页面，addModule() 内部 fetch
+//    file:// 会被 CORS 拦截，故不能用构建产出的静态资源路径。
+// 2. 实测 Chromium 148（Electron 42 同内核）：blob: URL 加载 worklet 会报
+//    "Unable to load a worklet's module"，data: URL 可用（本项目已实测通过）。
+let recorderWorkletUrl: string | null = null
+function getRecorderWorkletUrl(): string {
+  if (!recorderWorkletUrl) {
+    recorderWorkletUrl = `data:application/javascript,${encodeURIComponent(recorderWorkletSource)}`
+  }
+  return recorderWorkletUrl
+}
 
 export type RecorderState = 'idle' | 'requesting' | 'recording' | 'encoding' | 'done' | 'error'
 
@@ -40,7 +54,7 @@ export function useRecorder() {
 
   let mediaStream: MediaStream | null = null
   let audioContext: AudioContext | null = null
-  let scriptNode: ScriptProcessorNode | null = null
+  let workletNode: AudioWorkletNode | null = null
   let pcmBuffers: Float32Array[] = []
   let startTime = 0
   let durationTimer: ReturnType<typeof setInterval> | null = null
@@ -58,9 +72,10 @@ export function useRecorder() {
   }
 
   function cleanupAudio() {
-    if (scriptNode !== null) {
-      scriptNode.disconnect()
-      scriptNode = null
+    if (workletNode !== null) {
+      workletNode.port.onmessage = null
+      workletNode.disconnect()
+      workletNode = null
     }
     if (audioContext !== null) {
       audioContext.close().catch(() => {})
@@ -97,18 +112,25 @@ export function useRecorder() {
 
     try {
       audioContext = new AudioContext()
+      await audioContext.audioWorklet.addModule(getRecorderWorkletUrl())
+
       const source = audioContext.createMediaStreamSource(mediaStream)
 
-      const bufferSize = 4096
-      scriptNode = audioContext.createScriptProcessor(bufferSize, 1, 1)
+      // 与原 ScriptProcessorNode(bufferSize, 1, 1) 保持一致：单声道输入
+      workletNode = new AudioWorkletNode(audioContext, 'recorder-worklet-processor', {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        channelCount: 1,
+        channelCountMode: 'explicit'
+      })
 
-      scriptNode.onaudioprocess = (event) => {
-        const input = event.inputBuffer.getChannelData(0)
-        pcmBuffers.push(new Float32Array(input))
+      workletNode.port.onmessage = (event) => {
+        pcmBuffers.push(event.data as Float32Array)
       }
 
-      source.connect(scriptNode)
-      scriptNode.connect(audioContext.destination)
+      source.connect(workletNode)
+      // 连接 destination 以保证节点被音频图拉取处理（输出为空即静音，无回放）
+      workletNode.connect(audioContext.destination)
 
       state.value = 'recording'
       startTime = Date.now()

@@ -180,6 +180,13 @@ const hasHighRiskCommands = computed(() =>
 // ========== WebSocket 连接管理 ==========
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:6880'
 
+function getWsAuthToken(): string {
+  // TODO(security): 后端会话鉴权（Task 12）落地后，改用服务端签发的会话/访问 token。
+  // 已知限制：当前后端 /client/login 仅返回 user_id/email，尚无 token 机制，
+  // 且 /chat/ws 位于鉴权中间件的公开路径中，故暂以 user_id 作为连接标识。
+  return localStorage.getItem('user_id') || ''
+}
+
 function connectWebSocket(): Promise<void> {
   return new Promise((resolve, reject) => {
     if (ws && ws.readyState === WebSocket.OPEN) {
@@ -187,9 +194,8 @@ function connectWebSocket(): Promise<void> {
       return
     }
 
-    const userId = localStorage.getItem('user_id')
     const wsHost = API_BASE_URL.replace(/^http/, 'ws')
-    const url = `${wsHost}/api/v1/chat/ws?token=${userId || ''}`
+    const url = `${wsHost}/api/v1/chat/ws?token=${encodeURIComponent(getWsAuthToken())}`
     ws = new WebSocket(url)
 
     ws.onopen = () => {
@@ -204,9 +210,10 @@ function connectWebSocket(): Promise<void> {
       } catch { /* skip */ }
     }
 
-    ws.onerror = (err) => {
-      console.error('WS 连接失败:', err)
-      reject(err)
+    ws.onerror = () => {
+      // 不输出 err 对象，避免 ErrorEvent.message 包含带 token 的连接 URL
+      console.error('WS 连接失败')
+      reject(new Error('WebSocket 连接失败'))
     }
 
     ws.onclose = () => {
