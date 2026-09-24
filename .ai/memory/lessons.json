@@ -449,6 +449,33 @@
       "context": "L046 记录了 MCP capability 名臆造的修复；本次补充关键认知：validator._normalize_capabilities 用 token 重叠归一化（amap_mcp→mcp_amap），LLM 输出天然不稳定，凡非确定性输出参与路由/匹配必须有归一化兜底",
       "action": "已落库 L046（三层根治）+ AP-029（LLM 输出当精确键匹配的教训）；本次命令解析同理——LLM 输出格式（标签闭合、命名）都必须容错处理",
       "tags": ["aiagent", "llm", "normalization", "consolidation"]
+    },
+    {
+      "id": "L051",
+      "date": "2026-09-24",
+      "type": "bugfix",
+      "title": "命令参数/二进制白名单校验必须兼容非 ASCII 与路径限定二进制",
+      "context": "client execute-command 报 '命令参数包含非法字符: 日历'：SAFE_ARG_TOKEN 原只允许 ASCII 安全字符，LLM 为中文用户生成含中文参数（打开日历）的命令被拒；同时 '/usr/bin/open' 因含路径被 isAllowedBinary 精确白名单拒绝，报 '命令不在白名单内'",
+      "action": "SAFE_ARG_TOKEN 改为 `^(?:[A-Za-z0-9_./:@+=~-]|[\\u{0080}-\\u{10FFFF}])+$/u`（ASCII 安全字符 + 任意非 ASCII，仍拒 shell 元字符）；isAllowedBinary 增加 basename 白名单匹配——路径限定二进制（/usr/bin/open）取 basename 命中白名单即放行；白名单默认项维持命令名而非完整路径",
+      "tags": ["electron", "client", "command", "whitelist", "unicode"]
+    },
+    {
+      "id": "L052",
+      "date": "2026-09-24",
+      "type": "bugfix",
+      "title": "vite external 对按子路径导入的包必须用正则而非精确字符串",
+      "context": "fetch-mcp-resources 经 stdio 启动 `npx chrome-devtools-mcp@latest`，源码 import 的是 `@modelcontextprotocol/sdk/client/index.js`、`client/stdio.js` 等子路径；vite.config external 只写了精确字符串 `'@modelcontextprotocol/sdk'` 匹配不到子路径，rolldown 把 SDK（CJS）内联进 ESM 主进程，`require(\"child_process\")` 被改写为 __require 在运行时抛 'Calling require for child_process in an environment that doesn't expose the require function'",
+      "action": "external 改为正则 `/^@modelcontextprotocol\\/sdk/`，所有子路径 import 均保持 external、由 Electron 以真实 CJS 加载；重建后主 bundle 仅剩 `import(\"@modelcontextprotocol/sdk/client/index.js\")` 等外部动态导入。凡源码用子路径导入的包，external 一律用 `^包名/` 正则（L043/AP-026 的补充）",
+      "tags": ["electron", "vite", "external", "esm", "mcp"]
+    },
+    {
+      "id": "L053",
+      "date": "2026-09-24",
+      "type": "pattern",
+      "title": "客户端配置页面模式：Overlay 设置页 → IPC → 主进程 sanitize+persist+内存即时生效",
+      "context": "命令白名单（DEFAULT_ALLOWED_COMMAND_BINARIES）需要让用户从系统设置页直接维护，而不必手改 userData JSON",
+      "action": "固定三步走：①主进程 get-command-whitelist（返回当前+默认）/ set-command-whitelist IPC handler，set 走 sanitizeCommandBinaries（trim/小写/去重/拒空白与 shell 元字符/上限 200）+ persistCommandWhitelist（写 userData/command-whitelist.json + 更新内存 Set 立即生效，空列表回退默认防失控）；②preload 暴露 getCommandWhitelist/setCommandWhitelist；③vite-env.d.ts 扩展 electronAPI 类型。UI 侧 SystemSettingsPage 加 Tab + CommandWhitelistTab.vue 输入框（每行一个命令名）+ 保存/恢复默认按钮",
+      "tags": ["electron", "client", "pattern", "ipc", "settings", "whitelist"]
     }
   ]
 }

@@ -65,8 +65,58 @@ function loadCommandWhitelist(): void {
   }
 }
 
-/** 命令参数合法字符集（拒绝 shell 元字符 / 注入） */
-const SAFE_ARG_TOKEN = /^[A-Za-z0-9_./:@+=~-]+$/
+/** 白名单二进制名校验：仅允许安全字符（无空白、无 shell 元字符） */
+const SAFE_BINARY_NAME = /^[A-Za-z0-9_./:@+=~-]+$/u
+
+/**
+ * 清洗命令白名单：trim、小写、去重、丢弃空项与非法项，最多保留 200 项。
+ * 与 loadCommandWhitelist 的语义保持一致。
+ */
+function sanitizeCommandBinaries(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return []
+  const seen = new Set<string>()
+  const result: string[] = []
+  for (const item of raw.slice(0, 200)) {
+    if (typeof item !== 'string') continue
+    const b = item.trim().toLowerCase()
+    if (!b || !SAFE_BINARY_NAME.test(b) || seen.has(b)) continue
+    seen.add(b)
+    result.push(b)
+  }
+  return result
+}
+
+/**
+ * 持久化命令白名单：写入 userData/command-whitelist.json 并更新内存 Set。
+ * 空列表视为无效 → 回退到内置默认白名单（避免完全失去保护）。
+ */
+function persistCommandWhitelist(list: unknown): string[] {
+  const clean = sanitizeCommandBinaries(list)
+  const saved = clean.length > 0 ? clean : DEFAULT_ALLOWED_COMMAND_BINARIES
+  const configPath = path.join(app.getPath('userData'), CONFIG_FILE_NAME)
+  fs.mkdirSync(app.getPath('userData'), { recursive: true })
+  fs.writeFileSync(configPath, JSON.stringify({ allowedBinaries: saved }, null, 2), 'utf-8')
+  allowedCommandBinaries = new Set(saved)
+  logger.info(`[CommandWhitelist] 白名单已更新: ${saved.length} 项`)
+  return saved
+}
+
+// ==================== 命令白名单 IPC ====================
+
+/** 获取当前生效的命令白名单及内置默认（供系统设置页展示/恢复默认） */
+ipcMain.handle('get-command-whitelist', () => ({
+  allowedBinaries: Array.from(allowedCommandBinaries),
+  defaults: DEFAULT_ALLOWED_COMMAND_BINARIES,
+}))
+
+/** 保存命令白名单（系统设置页），立即生效并持久化到 userData/command-whitelist.json */
+ipcMain.handle('set-command-whitelist', (_event, payload: { allowedBinaries?: unknown }) => {
+  const saved = persistCommandWhitelist(payload?.allowedBinaries)
+  return { allowedBinaries: saved, defaults: DEFAULT_ALLOWED_COMMAND_BINARIES }
+})
+
+/** 命令参数合法字符集：ASCII 安全字符 + 任意非 ASCII（中文文件名等），拒绝 shell 元字符 / 注入 */
+const SAFE_ARG_TOKEN = /^(?:[A-Za-z0-9_./:@+=~-]|[\u{0080}-\u{10FFFF}])+$/u
 
 function isAllowedExternalUrl(rawUrl: string): boolean {
   try {
@@ -661,6 +711,8 @@ function tokenizeCommand(command: string): string[] {
 function isAllowedBinary(binary: string, workingDir: string, skillsBase: string): boolean {
   const base = binary.toLowerCase()
   if (allowedCommandBinaries.has(base)) return true
+  // 允许白名单内二进制以绝对/带路径形式出现（如 /usr/bin/open → basename open）
+  if (allowedCommandBinaries.has(path.basename(base))) return true
   if (binary.includes('/') || binary.includes('\\')) {
     const resolved = path.resolve(workingDir, binary)
     if (resolved === skillsBase || resolved.startsWith(skillsBase + path.sep)) {

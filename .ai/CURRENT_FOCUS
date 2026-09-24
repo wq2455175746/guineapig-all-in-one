@@ -1,46 +1,30 @@
 {
-  "service": "all",
-  "task_id": "full-project-optimization",
-  "task_name": "全项目优化：安全修复 + 性能提升 + 可维护性（.ai/TODO.md 14 项）",
-  "status": "completed",
-  "started_at": "2026-08-21",
-  "completed_at": "2026-09-06",
-  "description": "并行审查 4 个 package 后，通过 14 个任务批次修复全部优化点：P0 安全（zip-slip/ACL/鉴权/命令注入/IDOR/SSRF/WS 崩溃）、P1 性能（事件循环阻塞/超时/N+1/索引/连接池/背压/ECharts 泄漏/AudioWorklet）、P2 可维护性（agent.py 重构/死代码/依赖/日志/CRUD 样板）。每任务子代理实现 + 独立审查，最终整体审查后补齐 6 项集成缺口",
+  "service": "guineapig-client",
+  "task_id": "client-command-robustness-and-whitelist-ui",
+  "task_name": "Client 命令执行健壮性修复 + 命令白名单管理 UI",
+  "status": "in_progress",
+  "started_at": "2026-09-24",
+  "description": "修复 execute-command 误拒合法命令（非 ASCII 参数/路径限定二进制），修复 fetch-mcp-resources 的 ESM __require 崩溃（SDK 子路径 external），并为命令白名单（DEFAULT_ALLOWED_COMMAND_BINARIES）新增系统设置页管理 UI（IPC + sanitize + 落盘 userData + 立即生效）",
   "milestones": {
-    "aiagent P0 安全（zip-slip/ACL/预签名/凭据/URL编码/鉴权）": "2026-08-21",
-    "aiagent P1 性能（事件循环阻塞/超时/RAG/客户端复用）": "2026-08-21",
-    "aiagent P2 维护（agent.py 重构/死代码/依赖/request_id 日志）": "2026-08-21",
-    "client P0 安全（webSecurity/IPC/unzip/文件读/openExternal/登录RSA）": "2026-08-21",
-    "client P1（AudioWorklet/WS 鉴权）": "2026-08-21",
-    "ops-web P0（注册页/admin token）": "2026-08-21",
-    "ops-web P1/P2（ECharts 泄漏/CRUD 样板/路由守卫）": "2026-09-06",
-    "backend P0（HMAC 鉴权/IDOR/inner token/SSRF/WS 崩溃/死锁/登录RSA）": "2026-09-06",
-    "backend P1/P2（上下文/N+1/索引/日志/错误处理）": "2026-09-06",
-    "最终整体审查 + 6 项集成缺口修复": "2026-09-06"
+    "execute-command 误拒修复（SAFE_ARG_TOKEN 非 ASCII + isAllowedBinary basename）": "2026-09-24",
+    "fetch-mcp-resources ESM 崩溃修复（external 正则 ^/@modelcontextprotocol/sdk/）": "2026-09-24",
+    "命令白名单管理 UI（SystemSettingsPage Tab + CommandWhitelistTab.vue + IPC 三步走）": "2026-09-24",
+    "harness 更新（lessons L051-L053 / AP-033 / SP-039 / client AGENTS.md 重写）": "2026-09-24"
   },
   "completed_tasks": [
-    "aiagent: ZIP SLIP 防护 + S3 ACL 私有化 + 预签名 URL 修复 + 凭据清理 + URL 编码",
-    "aiagent: 全接口 token 鉴权中间件 + prod CORS 收紧",
-    "aiagent: 事件循环阻塞修复（to_thread/AsyncOpenAI）+ 全链路超时",
-    "aiagent: RAG 任务管理 + 下载错误传播 + LLM/Milvus 客户端复用 + tqdm 移除",
-    "aiagent: agent.py 956 行单体重构 + 静默吞错 + 响应状态码映射",
-    "aiagent: 死代码清理 + 配置收敛 + LLM 重试/令牌预算 + 提示注入 + 依赖对齐 + request_id 日志",
-    "client: webSecurity/sandbox + IPC 命令白名单 + unzip→adm-zip + 文件读限制 + openExternal 白名单 + MD5→RSA 登录 + DevTools 仅 dev + temp 路径穿越",
-    "client: 录音迁移 AudioWorklet + WS 不再用裸 user_id",
-    "ops-web: 注册页修复 + admin token 清理 + .gitignore",
-    "ops-web: Dashboard ECharts 泄漏修复 + loadUsers 共享缓存",
-    "ops-web: usePagedList composable + 路由守卫 + 拦截器 + 按需 ECharts + 插槽 index",
-    "backend: HMAC 会话 Token 鉴权（弃用 X-User-Id）+ 全链路 IDOR 属主校验 + inner 共享 token + aimodel/test SSRF 白名单 + WS done+Once 防崩 + 关闭死锁 + 注册码 env + api_key HMAC 存储 + 登录 RSA 解密",
-    "backend: 请求上下文传播 + 超时 + goroutine 生命周期 + N+1 批量查询 + 性能索引迁移 + 共享 HTTP client + WS 背压",
-    "backend: message_count 原子自增 + 忽略错误审计 + 日志统一 zap + 死代码 + 配置化",
-    "最终整体审查：backend→aiagent X-Admin-Token 接线 + 预签名下载属主校验 + BizError 业务错误透出 + INNER_TOKEN 部署接线 + Makefile 测试防挂 + 打包公钥 IPC"
+    "SAFE_ARG_TOKEN 改为 `(?:[A-Za-z0-9_./:@+=~-]|[\\u{0080}-\\u{10FFFF}])+`，允许中文等非 ASCII 参数，仍拒绝 shell 元字符",
+    "isAllowedBinary 按 basename 匹配白名单，放行 /usr/bin/open 等路径限定二进制",
+    "vite.config external 精确字符串 ':@modelcontextprotocol/sdk' 改正则 /^@modelcontextprotocol\\/sdk/，SDK 子路径保持 external",
+    "清理 dist/electron 残留 SDK chunk（该 outDir 不自动清空）",
+    "新增 get-command-whitelist / set-command-whitelist IPC + sanitizeCommandBinaries / persistCommandWhitelist（空列表回退默认）",
+    "preload 暴露 getCommandWhitelist/setCommandWhitelist + vite-env.d.ts 类型扩展",
+    "SystemSettingsPage 新增 命令白名单 Tab + CommandWhitelistTab.vue（每行一个命令名 + 保存/恢复默认）",
+    "README 命令白名单节新增页面配置说明",
+    "验证：sanitize 逻辑 node 用例 + vue-tsc + npm run build + make validate 全部通过"
   ],
   "next_tasks": [
-    "部署配置：设置 JWT_SECRET / INNER_TOKEN / ADMIN_TOKEN / AIMODEL_ALLOWED_HOSTS / REGISTER_CODE",
-    "/api/v1/users 用户列表挪到 admin 路由（当前任意登录用户可枚举）",
-    "遗留依赖清理：pycryptodome / crypto-js / vue-echarts",
-    "chat_memory.go 硬编码 localhost:8000 兜底改配置",
-    "MD5 旧 api_key 行滚动升级到 HMAC"
+    "真机运行验证：系统设置→命令白名单 保存后执行新命令即时生效",
+    "重启应用后白名单从 command-whitelist.json 正确加载（含页面保存过的自定义项）"
   ],
-  "updated_at": "2026-09-06T22:00:00"
+  "updated_at": "2026-09-24T11:10:00"
 }

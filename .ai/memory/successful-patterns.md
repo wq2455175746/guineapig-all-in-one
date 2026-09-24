@@ -533,3 +533,12 @@ func (*ResFiles) FindByIds(ctx, ids []uint) ([]ResFile, error) {
 3. **硬性兜底**（命令轮次 Redis 上限+客户端相同命令签名去重）
 **效果**：MCP 旅行规划、命令执行两个此前"时好时坏"的功能稳定可用；LLM 行为波动不再导致功能失效
 **适用**：所有依赖 LLM 输出但必须可靠执行的功能
+
+## SP-039: 客户端配置页面模式（Overlay 设置页 → IPC → sanitize+persist+内存即时生效）
+**做法**：把主进程常量/配置（如命令白名单）暴露为可页面维护的配置：
+1. 主进程注册 `get-xxx` / `set-xxx` IPC handler；set 侧做 **sanitize**（trim/小写/去重/拒非法字符/上限）→ **persist**（写 userData JSON）→ **更新内存状态立即生效**（无需重启）；空/非法输入回退默认值防失控
+2. preload 用 `ipcRenderer.invoke` 暴露同名方法
+3. `vite-env.d.ts` 扩展 `Window.electronAPI` 类型（IPC 三步缺一即运行时报错）
+4. UI 复用 Overlay 系统设置页 Tab + 输入框组件（每行一项 + 保存/恢复默认 + Toast 反馈）
+**效果**：命令白名单（`DEFAULT_ALLOWED_COMMAND_BINARIES`）现在可由用户在 系统设置→命令白名单 直接维护，配置落盘 userData/command-whitelist.json 并立即生效
+**适用**：任何"内置常量需要用户可维护"的场景（白名单/阈值/开关列表），主进程配置修改即时生效优于"改文件+重启"

@@ -269,6 +269,25 @@ interface Window {
      * 打包环境以 file:// 加载 renderer，fetch('/public.key') 不可用，故由主进程读取后透传
      */
     getPublicKey: () => Promise<string>
+
+    /**
+     * 获取当前生效的命令白名单及内置默认值
+     * @returns Promise 返回 { allowedBinaries, defaults }
+     */
+    getCommandWhitelist: () => Promise<{
+      allowedBinaries: string[]
+      defaults: string[]
+    }>
+
+    /**
+     * 保存命令白名单（系统设置页），立即生效并持久化到 userData/command-whitelist.json
+     * @param binaries - 命令名数组
+     * @returns Promise 返回实际生效的白名单及内置默认值
+     */
+    setCommandWhitelist: (binaries: string[]) => Promise<{
+      allowedBinaries: string[]
+      defaults: string[]
+    }>
   }
 }
 

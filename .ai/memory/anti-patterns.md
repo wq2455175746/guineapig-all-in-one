@@ -187,8 +187,17 @@ close(client.Send)  // ❌ 仍有 writer 在发送
 // dist/electron/index.js 运行时报错
 var fsystem = __require("fs")  // ❌ ESM 作用域无 require → App threw an error during load
 ```
-**正确**：所有 CJS/原生依赖（adm-zip/archiver/node-machine-id/@modelcontextprotocol/sdk）都进 `external`，运行时由 Electron 以真实 CJS 加载
+**正确**：所有 CJS/原生依赖（adm-zip/archiver/node-machine-id/@modelcontextprotocol/sdk）都进 `external`，运行时由 Electron 以真实 CJS 加载；**按子路径导入的包（`@modelcontextprotocol/sdk/client/index.js` 等）external 必须用正则 `^/包名/`（如 `/^@modelcontextprotocol\/sdk/`），精确字符串 `'@modelcontextprotocol/sdk'` 匹配不到子路径 import，包仍会被内联**
 **原因**：rolldown 对打进 ESM bundle 的 CJS 代码里的 Node 内建 require 无法转换，只能在运行时抛错
+
+## AP-033: 命令白名单/参数校验按"理想输入"设计，误伤真实用法
+**错误**：SAFE_ARG_TOKEN 只允许 ASCII 安全字符，LLM 给中文用户生成 `open 日历` 被拒（'命令参数包含非法字符: 日历'）；isAllowedBinary 用精确字符串匹配，`/usr/bin/open` 这类路径限定二进制被拒（'命令不在白名单内'）
+```ts
+const SAFE_ARG_TOKEN = /^[A-Za-z0-9_.:/+=-]+$/          // ❌ 拒掉非 ASCII
+isAllowedBinary(bin) = whitelist.includes(bin)           // ❌ 拒掉带路径的二进制
+```
+**正确**：参数集 = ASCII 安全字符 ∪ 任意非 ASCII（`/^(?:[A-Za-z0-9_./:@+=~-]|[\u{0080}-\u{10FFFF}])+$/u`），仍拒绝 shell 元字符；二进制白名单按 basename 匹配（`/usr/bin/open` → basename `open` 命中即放行），白名单项本身存命令名
+**原因**：白名单是"防注入"不是"防真实用法"，把合法输入（中文参数/路径二进制）拒掉会直接破坏功能，且 LLM 输出天然贴近真实用户语言
 
 ## AP-027: CORS 白名单只配 .local 域名忽略 localhost
 **错误**：backend `corsHosts` 只写 `http://guineapig-client.local:5174`，而 dev 时 vite 在 5173 被占后顺延到 5174，origin 是 `http://localhost:5174`，预检没有 Access-Control-Allow-Origin

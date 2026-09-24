@@ -45,6 +45,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
   }) => ipcRenderer.invoke('execute-command', cmd),
 
   /**
+   * 获取命令白名单（系统设置页）
+   */
+  getCommandWhitelist: () => ipcRenderer.invoke('get-command-whitelist'),
+
+  /**
+   * 保存命令白名单（系统设置页），立即生效并持久化
+   */
+  setCommandWhitelist: (binaries: string[]) =>
+    ipcRenderer.invoke('set-command-whitelist', { allowedBinaries: binaries }),
+
+  /**
    * 获取 MCP Server 的 tools/resources/prompts
    */
   fetchMcpResources: (params: {

@@ -59,9 +59,7 @@ class MilvusSearcher:
 
             # 检查集合是否存在
             if not client.has_collection(collection_name):
-                logger.warning(
-                    f"[RAG] Milvus 集合不存在: {collection_name}"
-                )
+                logger.warning(f"[RAG] Milvus 集合不存在: {collection_name}")
                 return []
 
             # 加载集合到内存（幂等操作，重复加载无害）
@@ -89,16 +87,20 @@ class MilvusSearcher:
             hits = []
             for hits_group in results:
                 for hit in hits_group:
-                    hits.append({
-                        "text_chunk": hit.get("entity", {}).get("text_chunk", ""),
-                        "score": hit.get("distance", 0),
-                        "collection": collection_name,
-                    })
+                    hits.append(
+                        {
+                            "text_chunk": hit.get("entity", {}).get("text_chunk", ""),
+                            "score": hit.get("distance", 0),
+                            "collection": collection_name,
+                        }
+                    )
 
             return hits
 
         except Exception as e:
-            logger.error(f"[RAG] Milvus 搜索失败: collection={collection_name}, err={e}")
+            logger.error(
+                f"[RAG] Milvus 搜索失败: collection={collection_name}, err={e}"
+            )
             return []
 
     @staticmethod
@@ -217,11 +219,13 @@ class RerankerService:
                 doc = item.get("document") or {}
                 if isinstance(doc, dict):
                     doc_text = doc.get("text", doc_text)
-                ranked.append({
-                    "text": doc_text,
-                    "relevance_score": score,
-                    "index": idx,
-                })
+                ranked.append(
+                    {
+                        "text": doc_text,
+                        "relevance_score": score,
+                        "index": idx,
+                    }
+                )
 
             # 按得分降序排列
             ranked.sort(key=lambda x: x["relevance_score"], reverse=True)
@@ -332,8 +336,7 @@ def _format_rag_markdown(reranked: list[dict], chunk_cap: int = 2000) -> str:
         lines.append(text)
 
     lines.append(
-        "\n\n请参考以上知识库检索结果回答用户问题。"
-        "优先采用相关性高的信息。"
+        "\n\n请参考以上知识库检索结果回答用户问题。" "优先采用相关性高的信息。"
     )
 
     return "\n".join(lines)
