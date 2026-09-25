@@ -232,3 +232,17 @@ isAllowedBinary(bin) = whitelist.includes(bin)           // ❌ 拒掉带路径�
 **错误**：handleCommandResult 把命令执行结果注入 system prompt 并提示"可以生成新命令继续执行"，无轮次上限；LLM 对一次性任务也反复生成相同命令，确认框无限循环（日志 conv_id=83 连续 4 轮 messages 递增）
 **正确**：后端 Redis 计数器限制命令轮次（MaxCommandRounds=3），达上限丢弃 commands 兜底；prompt 明确任务完成即总结、标明剩余轮次；客户端对相同命令签名去重；用户新消息清零计数
 **原因**：任何"LLM 驱动的循环动作"都必须有硬性轮次上限——prompt 约束是软性的，LLM 可能忽略；三层（后端硬限+prompt 引导+客户端去重）才能防住
+
+## AP-034: 更新内置默认配置却忽略已落盘的持久化副本
+**错误**：改代码 `DEFAULT_ALLOWED_COMMAND_BINARIES` 追加 mkdir/cp 以为修复生效，但 `loadCommandWhitelist` 优先读 `userData/command-whitelist.json`（首次启动自动生成的默认副本），本机仍走旧清单，`命令不在白名单内: mkdir` 依旧报错（"修了没生效"）
+```ts
+// ❌ 只改代码默认，已存在的 userData 副本覆盖了它
+const DEFAULT_ALLOWED_COMMAND_BINARIES = [...newList]
+```
+**正确**：默认清单变更时同步更新已有持久化副本（本机直接改写 userData JSON，或引导用户经设置页"恢复默认→保存"）；更稳的长期方案是区分"自动生成的默认文件"与"用户自定义"，默认变更时仅重生成默认文件
+**原因**：凡有"文件优先于代码默认"的配置机制，改代码默认不会改变运行行为，必须连同配置副本一起处理
+
+## AP-035: 排错只依赖渲染进程 console，日志不落盘
+**错误**：主进程关键 handler（execute-command/skill/MCP/安全拦截）无 logger 调用，renderer 的 console.log/error 只进 DevTools 不进文件，日志文件只有启动信息，线上问题无从排查
+**正确**：主进程关键路径补 logger.info/error（命令执行全流程 + stdout/stderr 截断 500B）；renderer console warning/error 经 attachRendererLogging 转发到文件；Electron 42 用新 `console-message` 事件 API（details 直挂参数）
+**原因**：没有落盘日志等于没有观测手段，用户报错只能靠猜

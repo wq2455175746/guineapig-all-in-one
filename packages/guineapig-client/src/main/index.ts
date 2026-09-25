@@ -28,6 +28,8 @@ const DEFAULT_ALLOWED_COMMAND_BINARIES = [
   'npx', 'npm', 'node', 'python', 'python3', 'pip', 'pip3',
   // 系统只读/打开类（LLM 生成命令常用，无破坏性副作用）
   'open', 'xdg-open', 'ls', 'cat', 'pwd', 'echo', 'which', 'head', 'tail', 'grep',
+  // 文件操作类（cwd 已限制在 userData/skills 内，shell:false + 参数安全校验兜底）
+  'mkdir', 'cp', 'mv', 'rm', 'touch', 'printf', 'chmod', 'sed', 'tar',
 ]
 
 const CONFIG_FILE_NAME = 'command-whitelist.json'
@@ -51,6 +53,7 @@ function loadCommandWhitelist(): void {
         : []
       if (list.length > 0) {
         allowedCommandBinaries = new Set(list.map((b: string) => b.toLowerCase()))
+        logger.info(`[CommandWhitelist] 已从配置加载: ${list.length} 项 | ${configPath}`)
         return
       }
     }
@@ -150,7 +153,10 @@ function isAllowedInternalUrl(rawUrl: string): boolean {
 function attachWindowSecurity(win: BrowserWindow): void {
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (isAllowedExternalUrl(url)) {
+      logger.info(`[Security] window.open 转交系统浏览器: ${url}`)
       shell.openExternal(url).catch(() => {})
+    } else {
+      logger.error(`[Security] window.open 已拦截: ${url}`)
     }
     return { action: 'deny' }
   })
@@ -159,7 +165,39 @@ function attachWindowSecurity(win: BrowserWindow): void {
     if (!isAllowedInternalUrl(url)) {
       event.preventDefault()
       if (isAllowedExternalUrl(url)) {
+        logger.info(`[Security] 站外导航转交系统浏览器: ${url}`)
         shell.openExternal(url).catch(() => {})
+      } else {
+        logger.error(`[Security] 非法导航已拦截: ${url}`)
+      }
+    }
+  })
+}
+
+/**
+ * 将渲染进程关键事件转发到主进程文件日志
+ * 覆盖：加载失败 / 渲染进程崩溃 / 无响应 / console warning & error
+ */
+function attachRendererLogging(win: BrowserWindow): void {
+  win.webContents.on('did-fail-load', (_e, errorCode, errorDescription, validatedURL) => {
+    logger.error(`[Renderer] 加载失败: ${errorCode} ${errorDescription} | ${validatedURL}`)
+  })
+  win.webContents.on('render-process-gone', (_e, details) => {
+    logger.error(`[Renderer] 渲染进程退出: ${details.reason} | exitCode=${details.exitCode}`)
+  })
+  win.webContents.on('unresponsive', () => {
+    logger.error('[Renderer] 渲染进程无响应')
+  })
+  win.webContents.on('console-message', (details) => {
+    // 新 API：details 为 Event<WebContentsConsoleMessageEventParams>，参数直接挂在对象上
+    // level: 'verbose' | 'info' | 'warning' | 'error' — 只转发 warning/error，避免刷屏
+    if (details.level === 'error' || details.level === 'warning') {
+      const tag = `[Renderer:${path.basename(details.sourceId || '')}]`
+      const line = ` (line ${details.lineNumber})`
+      if (details.level === 'error') {
+        logger.error(`${tag} ${details.message}${line}`)
+      } else {
+        logger.info(`${tag} ${details.message}${line}`)
       }
     }
   })
@@ -197,6 +235,7 @@ function createWindow() {
   })
 
   attachWindowSecurity(mainWindow)
+  attachRendererLogging(mainWindow)
 
   if (isDev) {
     mainWindow.loadURL(getDevServerUrl())
@@ -207,6 +246,7 @@ function createWindow() {
   }
 
   mainWindow.once('ready-to-show', () => {
+    logger.info('[Window] 主窗口就绪')
     mainWindow?.maximize()
     mainWindow?.show()
   })
@@ -271,6 +311,7 @@ function createOverlayWindow(page: string, queryString?: string) {
   })
 
   attachWindowSecurity(win)
+  attachRendererLogging(win)
 
   if (isDev) {
     const url = `${getDevServerUrl()}overlay.html?page=${page}${queryString ? `&${queryString}` : ''}`
@@ -289,6 +330,7 @@ function createOverlayWindow(page: string, queryString?: string) {
   }
 
   win.once('ready-to-show', () => {
+    logger.info(`[Window] 覆盖窗口就绪: ${page}`)
     win.show()
   })
 
@@ -412,6 +454,7 @@ ipcMain.handle('get-machine-id', async () => {
  * 打开覆盖窗口（按页面名称）
  */
 ipcMain.handle('open-overlay-window', (_event, page: string, queryString?: string) => {
+  logger.info(`[Overlay] 打开页面: ${page}${queryString ? `?${queryString}` : ''}`)
   createOverlayWindow(page, queryString)
 })
 
@@ -431,9 +474,11 @@ ipcMain.on('close-window', (event) => {
 ipcMain.handle('save-temp-file', async (_event, data: { buffer: number[]; filename: string; dateDir?: string }) => {
   const filename = path.basename(data.filename || '')
   if (!filename) {
+    logger.error(`[TempFile] 拒绝（文件名无效）: ${JSON.stringify(data.filename)}`)
     throw new Error('文件名无效')
   }
   if (data.dateDir && !/^\d{8}$/.test(data.dateDir)) {
+    logger.error(`[TempFile] 拒绝（日期目录格式无效）: ${data.dateDir}`)
     throw new Error('日期目录格式无效')
   }
   let tempDir = path.join(app.getPath('userData'), 'temp')
@@ -445,6 +490,7 @@ ipcMain.handle('save-temp-file', async (_event, data: { buffer: number[]; filena
   }
   const filePath = path.join(tempDir, filename)
   fs.writeFileSync(filePath, Buffer.from(data.buffer))
+  logger.info(`[TempFile] 已保存: ${filePath} (${data.buffer?.length || 0}B)`)
   return filePath
 })
 
@@ -459,12 +505,15 @@ ipcMain.handle('read-local-file', async (_event, filePath: string) => {
     : path.resolve(userDataRoot, filePath)
 
   if (resolved !== userDataRoot && !resolved.startsWith(userDataRoot + path.sep)) {
+    logger.error(`[ReadLocalFile] 拒绝（越界读取）: ${filePath}`)
     throw new Error('无权读取该文件')
   }
   if (!fs.existsSync(resolved)) {
+    logger.error(`[ReadLocalFile] 文件不存在: ${filePath}`)
     throw new Error('文件不存在')
   }
   const buffer = fs.readFileSync(resolved)
+  logger.info(`[ReadLocalFile] 已读取: ${resolved} (${buffer.length}B)`)
   return buffer.buffer as ArrayBuffer
 })
 
@@ -475,8 +524,15 @@ ipcMain.handle('read-local-file', async (_event, filePath: string) => {
  * 使用 JS 解压库（adm-zip），禁用 shell unzip（防命令注入/路径穿越）
  */
 ipcMain.handle('download-and-extract-skill', async (_event, data: { url: string; skillName: string }) => {
-  const skillName = path.basename(data.skillName || '')
-  if (!/^[A-Za-z0-9_-]+$/.test(skillName)) {
+  const skillName = path.basename((data.skillName || '').trim())
+  // 允许字母/数字/中文/点/连字符/空格等，仅拒绝路径分隔与危险字符（防目录穿越 / 覆盖 skillsBase）
+  if (
+    !skillName ||
+    skillName === '.' ||
+    skillName === '..' ||
+    /[\/\\:*?"<>|\x00-\x1f]/.test(skillName)
+  ) {
+    logger.error(`[Skill] 技能名称不合法: ${JSON.stringify(data.skillName)}`)
     throw new Error('技能名称不合法')
   }
 
@@ -488,15 +544,19 @@ ipcMain.handle('download-and-extract-skill', async (_event, data: { url: string;
     fs.rmSync(extractDir, { recursive: true })
   }
 
+  logger.info(`[Skill] 开始下载解压: ${skillName}`)
+
   // 下载 zip 到临时文件
   const tmpZip = path.join(skillsBase, `${skillName}.zip`)
   const response = await fetch(data.url)
   if (!response.ok) {
+    logger.error(`[Skill] 下载失败: ${skillName} | ${response.statusText}`)
     throw new Error(`下载失败: ${response.statusText}`)
   }
   const buffer = Buffer.from(await response.arrayBuffer())
   fs.writeFileSync(tmpZip, buffer)
 
+  let writtenCount = 0
   try {
     const zip = new AdmZip(buffer)
     const entries = zip.getEntries()
@@ -547,8 +607,10 @@ ipcMain.handle('download-and-extract-skill', async (_event, data: { url: string;
       }
       fs.mkdirSync(path.dirname(dest), { recursive: true })
       fs.writeFileSync(dest, data)
+      writtenCount++
     }
   } catch (err: any) {
+    logger.error(`[Skill] 解压失败: ${skillName} | ${err.message || '未知错误'}`)
     throw new Error(`解压失败: ${err.message || '未知错误'}`)
   } finally {
     // 清理临时文件
@@ -557,6 +619,7 @@ ipcMain.handle('download-and-extract-skill', async (_event, data: { url: string;
     }
   }
 
+  logger.info(`[Skill] 技能就绪: ${skillName} | ${extractDir} | ${writtenCount} 个文件`)
   return extractDir
 })
 
@@ -572,8 +635,11 @@ ipcMain.handle('execute-command', async (event, cmd: {
   risk: string
 }) => {
   if (!cmd || typeof cmd.command !== 'string' || !cmd.command.trim()) {
+    logger.error(`[Command] 拒绝（参数无效）: ${JSON.stringify(cmd)}`)
     throw new Error('命令为空')
   }
+
+  logger.info(`[Command] 收到: type=${cmd.type || '?'} | risk=${cmd.risk || '?'} | cwd=${cmd.cwd || '(默认)'} | ${cmd.command}`)
 
   const skillsBase = path.join(app.getPath('userData'), 'skills')
   fs.mkdirSync(skillsBase, { recursive: true })
@@ -586,13 +652,16 @@ ipcMain.handle('execute-command', async (event, cmd: {
       workingDir = skillsBase
     } else {
       if (path.isAbsolute(raw)) {
+        logger.error(`[Command] 拒绝（cwd 绝对路径）: ${raw}`)
         throw new Error('cwd 不允许绝对路径')
       }
       if (raw.split(/[\\/]/).includes('..')) {
+        logger.error(`[Command] 拒绝（cwd .. 路径）: ${raw}`)
         throw new Error('cwd 不允许 .. 路径')
       }
       const resolved = path.resolve(skillsBase, raw)
       if (resolved !== skillsBase && !resolved.startsWith(skillsBase + path.sep)) {
+        logger.error(`[Command] 拒绝（cwd 超出技能目录）: ${raw}`)
         throw new Error('cwd 超出技能目录')
       }
       workingDir = resolved
@@ -615,25 +684,34 @@ ipcMain.handle('execute-command', async (event, cmd: {
       ? await dialog.showMessageBox(win, opts)
       : await dialog.showMessageBox(opts)
     if (response !== 1) {
+      logger.info(`[Command] 用户取消: ${cmd.command}`)
       throw new Error('命令已取消')
     }
+    logger.info(`[Command] 用户已确认: ${cmd.command}`)
   }
 
   // 解析命令并校验白名单（首 token 二进制 + 参数安全字符集）
   const tokens = tokenizeCommand(cmd.command)
   if (tokens.length === 0) {
+    logger.error(`[Command] 拒绝（命令为空）: ${cmd.command}`)
     throw new Error('命令为空')
   }
   const binary = tokens[0]
   if (!isAllowedBinary(binary, workingDir, skillsBase)) {
+    logger.error(`[Command] 拒绝（不在白名单）: ${binary} | ${cmd.command}`)
     throw new Error(`命令不在白名单内: ${binary}`)
   }
   const args = tokens.slice(1)
   for (const arg of args) {
     if (!SAFE_ARG_TOKEN.test(arg)) {
-      throw new Error(`命令参数包含非法字符: ${arg}`)
+      logger.error(`[Command] 拒绝（参数非法）: ${arg} | ${cmd.command}`)
+      throw new Error(
+        `命令参数包含非法字符: ${arg}（不支持 shell 重定向/管道等操作符，技能请改用白名单内二进制直接写文件）`
+      )
     }
   }
+
+  logger.info(`[Command] 执行: ${cmd.command} | cwd: ${workingDir} | risk: ${cmd.risk}`)
 
   // 显式构造 env，避免隐式继承
   const env: NodeJS.ProcessEnv = {
@@ -672,13 +750,25 @@ ipcMain.handle('execute-command', async (event, cmd: {
     child.stdout.on('data', (d: string) => { stdout += d })
     child.stderr.on('data', (d: string) => { stderr += d })
     child.on('error', (err) => {
+      logger.error(`[Command] 启动失败: ${cmd.command} | ${err.message}`)
       resolve({ stdout, stderr: stderr || err.message, exitCode: -1 })
     })
     child.on('close', (code) => {
+      logger.info(
+        `[Command] 完成: exit=${code ?? -1} | stdout=${stdout.length}B stderr=${stderr.length}B | ${cmd.command}`
+      )
+      if (stdout.trim()) logger.info(`[Command] stdout: ${truncate(stdout, 500)}`)
+      if (stderr.trim()) logger.error(`[Command] stderr: ${truncate(stderr, 500)}`)
       resolve({ stdout, stderr, exitCode: code ?? -1 })
     })
   })
 })
+
+/** 截断长文本（日志只保留前 max 字符） */
+function truncate(s: string, max = 500): string {
+  if (s.length <= max) return s
+  return `${s.slice(0, max)}...(截断 ${s.length - max}B)`
+}
 
 function tokenizeCommand(command: string): string[] {
   const tokens: string[] = []
@@ -739,6 +829,10 @@ ipcMain.handle('fetch-mcp-resources', async (_event, params: {
 }) => {
   const controller = new AbortController()
   let timeoutId: ReturnType<typeof setTimeout> | undefined
+
+  logger.info(
+    `[MCP] 获取资源: type=${params.type} | command=${params.command || ''} | url=${params.url || ''}`
+  )
 
   try {
     const { Client } = await import('@modelcontextprotocol/sdk/client/index.js')
@@ -826,24 +920,28 @@ ipcMain.handle('fetch-mcp-resources', async (_event, params: {
     // 关闭连接
     await client.close().catch(() => {})
 
-    return {
-      tools: (toolsResult?.tools || []).map((t: any) => ({
-        name: t.name,
-        description: t.description || '',
-        input_schema: t.inputSchema || t.input_schema || null,
-      })),
-      resources: (resourcesResult?.resources || []).map((r: any) => ({
-        uri: r.uri,
-        name: r.name,
-        description: r.description || '',
-        mimeType: r.mimeType || '',
-      })),
-      prompts: (promptsResult?.prompts || []).map((p: any) => ({
-        name: p.name,
-        description: p.description || '',
-      })),
-    }
+    const tools = (toolsResult?.tools || []).map((t: any) => ({
+      name: t.name,
+      description: t.description || '',
+      input_schema: t.inputSchema || t.input_schema || null,
+    }))
+    const resources = (resourcesResult?.resources || []).map((r: any) => ({
+      uri: r.uri,
+      name: r.name,
+      description: r.description || '',
+      mimeType: r.mimeType || '',
+    }))
+    const prompts = (promptsResult?.prompts || []).map((p: any) => ({
+      name: p.name,
+      description: p.description || '',
+    }))
+    logger.info(
+      `[MCP] 获取成功: type=${params.type} | tools=${tools.length} resources=${resources.length} prompts=${prompts.length}`
+    )
+
+    return { tools, resources, prompts }
   } catch (err: any) {
+    logger.error(`[MCP] 获取失败: type=${params.type} | ${err.message}`)
     throw new Error(`获取 MCP 资源失败: ${err.message}`)
   } finally {
     if (timeoutId) clearTimeout(timeoutId)
@@ -858,8 +956,10 @@ ipcMain.handle('fetch-mcp-resources', async (_event, params: {
  */
 ipcMain.handle('open-external', async (_event, url: string) => {
   if (typeof url !== 'string' || !isAllowedExternalUrl(url)) {
+    logger.error(`[OpenExternal] 拒绝: ${url}`)
     throw new Error(`不允许打开该链接: ${url}`)
   }
+  logger.info(`[OpenExternal] 打开: ${url}`)
   await shell.openExternal(url)
 })
 
@@ -925,6 +1025,8 @@ ipcMain.handle('zip-and-download-logs', async (_event, params: {
     return { cancelled: true }
   }
 
+  logger.info(`[Logs] 开始导出: ${startDate}-${endDate} | ${matchedFiles.length} 个文件`)
+
   // 创建 zip 并写入
   const { ZipArchive } = await import('archiver')
   return new Promise<{ path: string; count: number }>((resolve, reject) => {
@@ -932,10 +1034,12 @@ ipcMain.handle('zip-and-download-logs', async (_event, params: {
     const archive = new ZipArchive({ zlib: { level: 9 } })
 
     output.on('close', () => {
+      logger.info(`[Logs] 导出完成: ${filePath} | ${matchedFiles.length} 个文件`)
       resolve({ path: filePath, count: matchedFiles.length })
     })
 
     archive.on('error', (err) => {
+      logger.error(`[Logs] 导出失败: ${err.message}`)
       reject(err)
     })
 

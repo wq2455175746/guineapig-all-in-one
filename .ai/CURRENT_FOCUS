@@ -1,30 +1,36 @@
 {
   "service": "guineapig-client",
   "task_id": "client-command-robustness-and-whitelist-ui",
-  "task_name": "Client 命令执行健壮性修复 + 命令白名单管理 UI",
+  "task_name": "Client 命令执行健壮性修复 + 命令白名单管理 UI + 日志可观测性",
   "status": "in_progress",
   "started_at": "2026-09-24",
-  "description": "修复 execute-command 误拒合法命令（非 ASCII 参数/路径限定二进制），修复 fetch-mcp-resources 的 ESM __require 崩溃（SDK 子路径 external），并为命令白名单（DEFAULT_ALLOWED_COMMAND_BINARIES）新增系统设置页管理 UI（IPC + sanitize + 落盘 userData + 立即生效）",
+  "description": "修复 execute-command 误拒合法命令（非 ASCII 参数/路径限定二进制）、技能安装与白名单文件操作、ESM __require 崩溃；新增命令白名单管理 UI；全链路日志落盘。本批次：docx skill 实战暴露的 skill 名校验过严 + 白名单缺文件操作命令 + 持久化副本覆盖默认，以及 Electron 42 console-message API 变更",
   "milestones": {
     "execute-command 误拒修复（SAFE_ARG_TOKEN 非 ASCII + isAllowedBinary basename）": "2026-09-24",
     "fetch-mcp-resources ESM 崩溃修复（external 正则 ^/@modelcontextprotocol/sdk/）": "2026-09-24",
     "命令白名单管理 UI（SystemSettingsPage Tab + CommandWhitelistTab.vue + IPC 三步走）": "2026-09-24",
-    "harness 更新（lessons L051-L053 / AP-033 / SP-039 / client AGENTS.md 重写）": "2026-09-24"
+    "skill 名校验放宽（点/中文/空格） + 默认白名单补文件操作类 + 同步 userData 副本": "2026-09-24",
+    "全链路日志：execute-command/skill/MCP/安全边界 + attachRendererLogging 转发 renderer console": "2026-09-24",
+    "Electron 42 console-message 新 API 适配 + shell 重定向拒绝信息明确化": "2026-09-24",
+    "harness 更新（lessons L051-L058 / AP-033~035 / SP-039-040 / client AGENTS.md）": "2026-09-24"
   },
   "completed_tasks": [
-    "SAFE_ARG_TOKEN 改为 `(?:[A-Za-z0-9_./:@+=~-]|[\\u{0080}-\\u{10FFFF}])+`，允许中文等非 ASCII 参数，仍拒绝 shell 元字符",
-    "isAllowedBinary 按 basename 匹配白名单，放行 /usr/bin/open 等路径限定二进制",
-    "vite.config external 精确字符串 ':@modelcontextprotocol/sdk' 改正则 /^@modelcontextprotocol\\/sdk/，SDK 子路径保持 external",
-    "清理 dist/electron 残留 SDK chunk（该 outDir 不自动清空）",
-    "新增 get-command-whitelist / set-command-whitelist IPC + sanitizeCommandBinaries / persistCommandWhitelist（空列表回退默认）",
-    "preload 暴露 getCommandWhitelist/setCommandWhitelist + vite-env.d.ts 类型扩展",
-    "SystemSettingsPage 新增 命令白名单 Tab + CommandWhitelistTab.vue（每行一个命令名 + 保存/恢复默认）",
-    "README 命令白名单节新增页面配置说明",
-    "验证：sanitize 逻辑 node 用例 + vue-tsc + npm run build + make validate 全部通过"
+    "SAFE_ARG_TOKEN 允许非 ASCII 参数（拒 shell 元字符）；isAllowedBinary 按 basename 匹配放行 /usr/bin/open",
+    "vite.config external 子路径改正则 /^@modelcontextprotocol\\/sdk/，修复 ESM __require 崩溃",
+    "get/set-command-whitelist IPC + sanitizeCommandBinaries/persistCommandWhitelist + 设置页白名单 Tab",
+    "download-and-extract-skill 名校验放宽（安全宽松，仅拒空/./../路径分隔/危险字符）",
+    "DEFAULT_ALLOWED_COMMAND_BINARIES 追加 mkdir/cp/mv/rm/touch/printf/chmod/sed/tar；同步更新本机 userData 副本",
+    "execute-command 全流程日志（收到/cwd 拒绝/确认/白名单拒绝/执行/完成 + stdout&stderr 截断 500B）",
+    "skill/MCP/open-external/temp file/read-local/白名单加载/日志导出/overlay/窗口 补 logger",
+    "attachRendererLogging：did-fail-load/render-process-gone/unresponsive/console warning&error 转发文件",
+    "Electron 42 console-message 改用新 API（(details) 直挂参数）",
+    "shell 重定向/管道拒绝信息明确提示改用白名单二进制直接写文件",
+    "验证：node 校验用例 + vue-tsc + npm run build + make validate 全部通过"
   ],
   "next_tasks": [
-    "真机运行验证：系统设置→命令白名单 保存后执行新命令即时生效",
+    "真机验证：系统设置→命令白名单 保存后执行新命令即时生效",
+    "真机验证：docx skill 上传（含点/中文名）安装 + 保存 doc 到本地全流程，确认日志可观测",
     "重启应用后白名单从 command-whitelist.json 正确加载（含页面保存过的自定义项）"
   ],
-  "updated_at": "2026-09-24T11:10:00"
+  "updated_at": "2026-09-24T18:50:00"
 }

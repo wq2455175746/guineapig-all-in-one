@@ -281,9 +281,25 @@ function handleWSMessage(env: any) {
       const lastUserIdx = msgs.length - 1
       const lastMsg = msgs[lastUserIdx]
 
-      if (msgId > 0 && lastMsg && lastMsg.role === 'user') {
-        lastMsg.messageId = msgId
+      if (lastMsg && lastMsg.role === 'user') {
+        if (msgId > 0) {
+          lastMsg.messageId = msgId
+        }
         lastMsg.conversationId = convId
+        // 回填 ASR 转写文本与附件（保留本地播放路径）
+        if (env.payload?.content) {
+          lastMsg.content = env.payload.content
+        }
+        if (Array.isArray(env.payload?.attachments) && env.payload.attachments.length > 0) {
+          lastMsg.attachments = env.payload.attachments.map((att: any) => ({
+            id: att.id != null ? Number(att.id) : undefined,
+            type: att.type,
+            url: att.url,
+            name: att.name,
+            size: Number(att.size || 0),
+            localPath: att.localPath || (lastMsg.attachments || []).find((l: AttachmentItem) => l.url === att.url)?.localPath,
+          }))
+        }
       }
 
       currentConvId = convId
@@ -598,20 +614,16 @@ function handleVoiceSent(recordingInfo: RecordingInfo, embeddedFiles: { id: numb
   const userId = localStorage.getItem('user_id') || ''
   if (!userId) return
 
-  const attachment: Record<string, unknown> = {
+  const allAttachments: AttachmentItem[] = [{
     type: 'audio',
     url: recordingInfo.key,
     name: recordingInfo.name,
     size: recordingInfo.size,
-  }
-  if (recordingInfo.localPath) {
-    attachment.localPath = recordingInfo.localPath
-  }
-
-  const allAttachments: Record<string, unknown>[] = [attachment]
+    localPath: recordingInfo.localPath || undefined,
+  }]
   for (const tag of embeddedFiles) {
     allAttachments.push({
-      id: String(tag.id),
+      id: tag.id,
       type: 'embedded_file',
       url: '',
       name: tag.name,
@@ -640,6 +652,7 @@ function handleVoiceSent(recordingInfo: RecordingInfo, embeddedFiles: { id: numb
       deviceId: getDeviceId(),
       role: 'user',
       content: '',
+      attachments: allAttachments,
     })
   }).catch(() => {
     toast.add({ severity: 'error', summary: '连接失败', detail: '无法发送消息', life: 3000 })

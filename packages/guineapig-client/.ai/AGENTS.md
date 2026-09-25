@@ -31,10 +31,17 @@ cat ../../docs/design-docs/guineapig-client.md
 
 ## 命令白名单（execute-command）
 
-- 常量 `DEFAULT_ALLOWED_COMMAND_BINARIES`（`src/main/index.ts`）为内置默认白名单（开发命令 + 系统只读/打开命令）
-- 运行时白名单为内存 Set `allowedCommandBinaries`，启动时由 `loadCommandWhitelist()` 从 `userData/command-whitelist.json` 加载（缺失/损坏回退默认并写回）
-- `execute-command` handler：`spawn(shell:false)`，二进制必须过 `isAllowedBinary`（白名单按 basename 匹配，允许 `/usr/bin/open` 这类路径限定调用），参数逐个过 `SAFE_ARG_TOKEN` 正则（ASCII 安全字符 + 任意非 ASCII），cwd 限定 userData/skills 下，risk 非 low 弹二次确认
+- 常量 `DEFAULT_ALLOWED_COMMAND_BINARIES`（`src/main/index.ts`）为内置默认白名单：开发命令 + 系统只读/打开命令 + 文件操作类（mkdir/cp/mv/rm/touch/printf/chmod/sed/tar）
+- **配置副本优先于代码默认**：启动时 `loadCommandWhitelist()` 从 `userData/command-whitelist.json` 加载；文件存在则用之而非代码默认（首次启动自动生成副本）。**改代码默认时必须同步更新已有 userData 副本**（或经设置页"恢复默认→保存"），否则"修了没生效"
+- `execute-command` handler：`spawn(shell:false)`，二进制必须过 `isAllowedBinary`（白名单按 basename 匹配，允许 `/usr/bin/open` 这类路径限定调用），参数逐个过 `SAFE_ARG_TOKEN` 正则（ASCII 安全字符 + 任意非 ASCII，**拒 shell 重定向/管道等元字符**——`echo x > file` 这类命令会被拒，技能需用 python3/node/cp/printf 直接写文件），cwd 限定 userData/skills 下，risk 非 low 弹二次确认
 - **页面管理**：系统设置 Overlay → 命令白名单 Tab（`src/renderer-overlay/views/CommandWhitelistTab.vue`），IPC `get-command-whitelist` / `set-command-whitelist`；主进程 `sanitizeCommandBinaries()` 清洗（trim/小写/去重/拒空白与 shell 元字符），`persistCommandWhitelist()` 写 JSON + 更新内存 Set 立即生效，空列表回退默认
+
+## 日志规范（logger + 渲染进程转发）
+
+- 统一 logger：`userData/temp/logs/` 每日 error/info/debug 三文件；系统设置→本地日志 页可查看/删除/导出
+- **关键 handler 必须补日志**：入口记 info（参数摘要）、拒绝路径记 error（白名单/cwd/参数非法/越界读取/openExternal）、完成记 info（exit/字节数）；命令 stdout/stderr 用 `truncate(s, 500)` 截断落盘
+- `attachRendererLogging(win)` 已挂到每个窗口：转发 did-fail-load / render-process-gone / unresponsive / renderer console warning&error
+- **Electron 42 的 `console-message` 用新 API**：`on('console-message', (details) => ...)`，level/message/lineNumber/sourceId 直挂 details，level 为 'info'|'warning'|'error'|'debug'（旧 `(event, level, message, ...)` 签名已弃用）
 
 ## IPC 扩展约定
 

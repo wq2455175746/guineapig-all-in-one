@@ -275,7 +275,7 @@ func (h *Hub) handleChatSend(client *ClientConnection, env *response.WSEnvelope)
 		return
 	}
 
-	// 3. 发回用户消息的确认（包含 conversationId、messageId）
+	// 3. 发回用户消息的确认（包含 conversationId、messageId、ASR 文本、附件）
 	h.sendToClient(client, &response.WSEnvelope{
 		Type: "chat.send_ack",
 		From: "backend",
@@ -283,6 +283,8 @@ func (h *Hub) handleChatSend(client *ClientConnection, env *response.WSEnvelope)
 		Payload: map[string]any{
 			"message_id":      msgResp.MessageId,
 			"conversation_id": msgResp.ConversationId,
+			"content":         msgResp.Content,
+			"attachments":     msgResp.Attachments,
 		},
 		Meta: &response.WSMeta{
 			ConversationID: msgResp.ConversationId,

@@ -542,3 +542,13 @@ func (*ResFiles) FindByIds(ctx, ids []uint) ([]ResFile, error) {
 4. UI 复用 Overlay 系统设置页 Tab + 输入框组件（每行一项 + 保存/恢复默认 + Toast 反馈）
 **效果**：命令白名单（`DEFAULT_ALLOWED_COMMAND_BINARIES`）现在可由用户在 系统设置→命令白名单 直接维护，配置落盘 userData/command-whitelist.json 并立即生效
 **适用**：任何"内置常量需要用户可维护"的场景（白名单/阈值/开关列表），主进程配置修改即时生效优于"改文件+重启"
+
+## SP-040: Electron 主进程日志落盘覆盖模式
+**做法**：统一 logger（`userData/temp/logs/` 每日 error/info/debug 三文件）覆盖全链路：
+1. **关键 handler 入口记录**：收到请求 + 参数摘要；拒绝路径（白名单/cwd/参数非法/越界读取）记 error；完成记 exit/字节数
+2. **命令执行全流程**：收到(type/risk/cwd)→cwd 校验→用户确认/取消→执行→完成(exit + stdout/stderr 各截断 500B 落盘，`truncate(s, 500)` 工具)
+3. **渲染进程事件转发**：`attachRendererLogging` 捕获 did-fail-load / render-process-gone / unresponsive / console warning&error（Electron 42 用新 `console-message` API，`(details)` 直挂参数）
+4. **安全边界记录**：window.open 拦截、非法导航拦截、openExternal 拒绝均记 error
+5. 日志可被系统设置→本地日志页查看/删除/导出 zip
+**效果**：docx skill 等复杂流程执行失败（mkdir/cp 被拒、`>` 参数非法、技能名称不合法）都能在日志文件里看到完整链路
+**适用**：任何需要可观测性的 Electron 客户端功能；排错第一步看 `userData/temp/logs/`

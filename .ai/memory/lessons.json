@@ -476,6 +476,51 @@
       "context": "命令白名单（DEFAULT_ALLOWED_COMMAND_BINARIES）需要让用户从系统设置页直接维护，而不必手改 userData JSON",
       "action": "固定三步走：①主进程 get-command-whitelist（返回当前+默认）/ set-command-whitelist IPC handler，set 走 sanitizeCommandBinaries（trim/小写/去重/拒空白与 shell 元字符/上限 200）+ persistCommandWhitelist（写 userData/command-whitelist.json + 更新内存 Set 立即生效，空列表回退默认防失控）；②preload 暴露 getCommandWhitelist/setCommandWhitelist；③vite-env.d.ts 扩展 electronAPI 类型。UI 侧 SystemSettingsPage 加 Tab + CommandWhitelistTab.vue 输入框（每行一个命令名）+ 保存/恢复默认按钮",
       "tags": ["electron", "client", "pattern", "ipc", "settings", "whitelist"]
+    },
+    {
+      "id": "L054",
+      "date": "2026-09-24",
+      "type": "bugfix",
+      "title": "Skill 名校验过严误伤真实 zip 名（点/中文/空格）",
+      "context": "docx skill 上传报 '技能名称不合法'；download-and-extract-skill 校验 `/^[A-Za-z0-9_-]+$/` 拒绝 `docx.v1.0.zip`、中文名、含空格名等真实 zip 命名（skillName 取自文件名去 .zip）",
+      "action": "放宽为安全宽松校验：path.basename + 拒绝空名 / `.` / `..` / `[\\/\\\\:*?\"<>|]` / 控制字符；允许 Unicode、点、连字符、空格。与 AP-033 同理——白名单/校验按'防注入'设计，不误伤真实用法",
+      "tags": ["client", "skill", "validation", "unicode"]
+    },
+    {
+      "id": "L055",
+      "date": "2026-09-24",
+      "type": "bugfix",
+      "title": "命令白名单缺文件操作命令，技能保存文件被拒；持久化副本优先于代码默认",
+      "context": "docx skill 执行 mkdir/cp 报 '命令不在白名单内'；DEFAULT_ALLOWED_COMMAND_BINARIES 只有开发 + 只读命令。另：userData/command-whitelist.json 存在时 loadCommandWhitelist 用之而非代码默认，改代码默认后本机仍走旧配置（'修了没生效'）",
+      "action": "默认白名单追加文件操作类（mkdir/cp/mv/rm/touch/printf/chmod/sed/tar），安全前提是 cwd 已限制 userData/skills 内 + shell:false + SAFE_ARG_TOKEN 兜底；升级默认清单时必须同步更新已有 userData 配置副本（或经设置页'恢复默认→保存'）",
+      "tags": ["client", "whitelist", "security", "config"]
+    },
+    {
+      "id": "L056",
+      "date": "2026-09-24",
+      "type": "bugfix",
+      "title": "Electron 42 console-message 事件签名变更，旧参数已弃用",
+      "context": "主进程监听 console-message 用 `(event, level, message, line, sourceId)` 旧签名，Electron 42 运行时警告 \"'console-message' arguments are deprecated... use Event<WebContentsConsoleMessageEventParams>\"",
+      "action": "改用新 API：`on('console-message', (details) => ...)`，level/message/lineNumber/sourceId 直接挂在 details（Event<WebContentsConsoleMessageEventParams>）对象上，level 为 'info'|'warning'|'error'|'debug' 字符串",
+      "tags": ["electron", "api", "deprecation", "upgrade"]
+    },
+    {
+      "id": "L057",
+      "date": "2026-09-24",
+      "type": "pattern",
+      "title": "渲染进程 console 日志转发主进程文件 + 关键 handler 补日志",
+      "context": "客户端日志文件只有启动信息，skill/MCP/命令执行无记录——logger 仅主进程 8 处调用，renderer 的 console.log 只进 DevTools 不进文件，用户报错无从排查",
+      "action": "①attachRendererLogging 转发 did-fail-load / render-process-gone / unresponsive / console warning&error 到文件；②关键 handler 补 logger.info/error：execute-command 全流程（收到/cwd 拒绝/确认/白名单拒绝/执行/完成含 stdout&stderr 截断 500B）、skill 下载解压、MCP 获取、open-external、save/read temp file、白名单加载/保存、日志导出、overlay/窗口就绪、安全边界拦截",
+      "tags": ["client", "logging", "electron", "observability"]
+    },
+    {
+      "id": "L058",
+      "date": "2026-09-24",
+      "type": "design",
+      "title": "shell:false 下不支持 shell 重定向/管道，`>` 拒绝是设计行为",
+      "context": "命令参数含 `>` 被 SAFE_ARG_TOKEN 拒绝（'命令参数包含非法字符: >'），用户误以为 bug；实际 spawn(shell:false) 下 shell 操作符不可用是安全设计",
+      "action": "拒绝信息明确提示'不支持 shell 重定向/管道等操作符，技能请改用白名单内二进制直接写文件'；技能作者应避免 `echo x > file`，改用 python3/node/cp/printf 等白名单内直接写文件的方式",
+      "tags": ["client", "security", "shell", "commands"]
     }
   ]
 }
