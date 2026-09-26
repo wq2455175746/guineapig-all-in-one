@@ -50,6 +50,8 @@
       :agent-summary="agentSummary"
       @confirm-plan="handleAgentConfirmPlan"
       @cancel-plan="handleAgentCancelPlan"
+      @close="handleAgentCloseDialog"
+      @terminate="handleAgentTerminate"
       @skip-step="handleAgentSkipStep"
       @modify-step="handleAgentModifyStep"
       @intervene="handleAgentIntervene"
@@ -593,8 +595,7 @@ async function handleSend(text: string, embeddedFiles: { id: number; name: strin
   }
 
   if (agentMode.value) {
-    // Agent 模式
-    showHITL.value = true
+    // Agent 模式 — 先不打开 HITL 弹窗，等服务端下发计划（chat.agent_plan / awaiting_confirmation）再弹
     agentStatus.value = 'planning'
     agentSteps.value = []
     currentStepId.value = ''
@@ -895,6 +896,26 @@ function handleAgentCancelPlan() {
     })
   }
   isStreaming.value = false
+}
+
+/** 关闭弹窗 — 仅隐藏面板，不终止服务端任务 */
+function handleAgentCloseDialog() {
+  showHITL.value = false
+}
+
+/** 终止请求 — 关闭面板并取消服务端任务，避免卡在弹窗 */
+function handleAgentTerminate() {
+  showHITL.value = false
+  agentStatus.value = 'idle'
+  agentSteps.value = []
+  currentStepId.value = ''
+  agentSummary.value = null
+  isStreaming.value = false
+  if (pendingAgentConvId.value > 0) {
+    sendWSMessage('chat.agent_intervene', { action: 'cancel-all' }, {
+      conversation_id: pendingAgentConvId.value,
+    })
+  }
 }
 
 function handleAgentSkipStep(stepId: string) {

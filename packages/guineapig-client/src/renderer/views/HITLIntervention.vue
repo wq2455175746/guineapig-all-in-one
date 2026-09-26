@@ -21,6 +21,8 @@
   @emits:
   - confirm-plan: 用户确认执行计划
   - cancel-plan: 用户取消计划
+  - close: 关闭弹窗（仅隐藏面板，不终止服务端任务）
+  - terminate: 终止请求（关闭面板并取消服务端任务）
   - skip-step(stepId): 跳过指定步骤
   - modify-step(stepId, params): 修改步骤参数
   - intervene(action): 总体干预动作 (pause / resume / cancel-all)
@@ -38,6 +40,8 @@
           <span :class="['hitl-status-badge', `hitl-status--${agentStatus}`]">
             {{ statusLabel }}
           </span>
+          <Button icon="pi pi-times" class="p-button-rounded p-button-text p-button-sm hitl-close-btn"
+            aria-label="关闭弹窗" @click="$emit('close')" />
         </div>
         <div v-if="agentSummary" class="hitl-summary-row">
           <span class="hitl-stat">
@@ -119,6 +123,8 @@
             icon="pi pi-check" severity="contrast" raised :disabled="!steps.length" @click="$emit('confirm-plan')" />
           <Button v-if="agentStatus === 'awaiting_confirmation' || agentStatus === 'planning'" label="取消任务"
             icon="pi pi-times" severity="secondary" outlined raised @click="$emit('cancel-plan')" />
+          <Button v-if="isActiveState" label="终止请求" icon="pi pi-stop-circle" severity="danger"
+            outlined raised @click="$emit('terminate')" />
         </div>
         <!-- 右侧: 执行中控制 -->
         <div class="hitl-action-right">
@@ -263,6 +269,8 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   'confirm-plan': []
   'cancel-plan': []
+  'close': []
+  'terminate': []
   'skip-step': [stepId: string]
   'modify-step': [stepId: string, params: Record<string, any>]
   'intervene': [action: string]
@@ -275,6 +283,13 @@ const emit = defineEmits<{
 
 const isExecutingOrPaused = computed(() =>
   props.agentStatus === 'executing' || props.agentStatus === 'paused'
+)
+
+/** 任务仍在进行中（可终止）的状态 */
+const isActiveState = computed(() =>
+  ['planning', 'awaiting_confirmation', 'executing', 'paused', 'awaiting_client'].includes(
+    props.agentStatus
+  )
 )
 
 const statusLabel = computed(() => {

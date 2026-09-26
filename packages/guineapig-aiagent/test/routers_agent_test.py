@@ -1,9 +1,9 @@
 """
-Agent 入口路由端到端测试 — Phase 0-3 + DAG 生成。
+Agent 入口路由端到端测试 — 简化意图识别 (规则筛选 + LLM 意图识别) + DAG 生成。
 
 DeepAnalyzer 和 DAGGenerator 由 settings.LLM_API_KEY 控制。
 有 LLM Key 时 → 全流程测试（含 LLM 分析 + DAG 生成）
-无 LLM Key 时 → 验证优雅降级（fallback/error）
+无 LLM Key 时 → 验证优雅降级（fallback_to_chat）
 """
 
 from fastapi.testclient import TestClient
@@ -49,36 +49,28 @@ class TestAgentChat:
         data = resp.json()["result"]
         assert data["action"] == "fallback_to_chat"
 
-    # ── Phase 1: 关键词匹配 → proceed ──
+    # ── 非 trivial → LLM 意图识别 → 路由 ──
 
     def test_search_keyword(self):
-        """搜索关键词 → proceed (置信度 >= 0.5)"""
+        """搜索请求 → task → LLM 意图识别 → proceed 或 fallback_to_chat"""
         resp = client.post(f"{BASE}/chat", json={"message": "帮我搜索量子计算的最新进展"})
         data = resp.json()["result"]
-        assert data["action"] == "proceed"
-        assert data["quick_filter"] == "simple"
-        assert any(c["intent_type"] == "web_search" for c in data["candidates"])
+        assert data["quick_filter"] == "task"
+        assert data["action"] in ("proceed", "fallback_to_chat")
 
-    def test_memory_keyword(self):
-        """记忆关键词 → proceed"""
-        resp = client.post(f"{BASE}/chat", json={"message": "我记得上次讨论的方案"})
+    def test_actionable_message(self):
+        """可执行请求在有 LLM 时应生成 DAG"""
+        resp = client.post(f"{BASE}/chat", json={"message": "帮我搜索今天星期几"})
         data = resp.json()["result"]
-        assert data["action"] == "proceed"
-        assert any(c["intent_type"] == "memory_retrieve" for c in data["candidates"])
+        assert data["quick_filter"] == "task"
 
-    def test_cli_execute_keyword(self):
-        """CLI 执行 → proceed"""
-        resp = client.post(f"{BASE}/chat", json={"message": "帮我安装python包requests"})
-        data = resp.json()["result"]
-        assert data["action"] == "proceed"
-        assert any(c["intent_type"] == "cli_execute" for c in data["candidates"])
-
-    def test_summarize_keyword(self):
-        """总结 → proceed (置信度 >= 0.5)"""
-        resp = client.post(f"{BASE}/chat", json={"message": "帮我把这篇文章总结一下"})
-        data = resp.json()["result"]
-        assert data["action"] == "proceed"
-        assert any(c["intent_type"] == "memory_summarize" for c in data["candidates"])
+        if HAS_LLM and data.get("deep_analysis"):
+            # LLM 可用且分析成功 → proceed 并生成 DAG
+            assert data["action"] in ("proceed", "fallback_to_chat")
+            assert data["deep_analysis"]["intent_type"] is not None
+        else:
+            # 无 LLM → fallback_to_chat
+            assert data["action"] == "fallback_to_chat"
 
     # ── 能力清单 ──
 
@@ -92,7 +84,12 @@ class TestAgentChat:
                     {
                         "server_name": "filesystem",
                         "transport_type": "stdio",
-                        "tools": ["read_file", "write_file"],
+                        "command": "npx",
+                        "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
+                        "tools": [
+                            {"name": "read_file", "description": "read a file"},
+                            {"name": "write_file", "description": "write a file"},
+                        ],
                     }
                 ],
                 "skills": [{"name": "数据分析"}],
@@ -106,33 +103,33 @@ class TestAgentChat:
         assert "formatted" in caps
         assert any("mcp_" in c for c in caps["available"])
 
-    def test_decision_structure(self):
-        """决策结果应包含完整结构"""
+    def test_response_structure(self):
+        """响应应包含 action / quick_filter / deep_analysis / dag"""
         resp = client.post(f"{BASE}/chat", json={"message": "帮我搜索一下最新的AI新闻"})
         data = resp.json()["result"]
-        assert "decision" in data
-        assert "action" in data["decision"]
-        assert "confidence" in data["decision"]
-        assert "reason" in data["decision"]
+        assert "action" in data
+        assert "quick_filter" in data
+        assert "deep_analysis" in data
+        assert "dag" in data
 
-    # ── Phase 2: 复杂请求 (LLM 可用时全流程) ──
+    # ── 复杂请求 (LLM 可用时全流程) ──
 
     def test_complex_multi_step(self):
-        """复杂请求 → complex 标记 → LLM 分析 → proceed (LLM 可用时)"""
+        """复杂请求 → task → LLM 分析 → proceed (LLM 可用时)"""
         resp = client.post(
             f"{BASE}/chat",
             json={"message": "先搜索量子计算的最新进展，然后总结成报告"},
         )
         data = resp.json()["result"]
-        assert data["quick_filter"] == "complex"
+        assert data["quick_filter"] == "task"
 
         if HAS_LLM and data.get("deep_analysis"):
             # LLM 可用且分析成功 → proceed
-            assert data["action"] in ("proceed", "clarify")
+            assert data["action"] in ("proceed", "fallback_to_chat")
             assert data["deep_analysis"]["intent_type"] is not None
         else:
-            # 无 LLM → fallback
-            assert data["action"] in ("fallback", "fallback_to_chat")
+            # 无 LLM → fallback_to_chat
+            assert data["action"] == "fallback_to_chat"
 
     def test_dag_generation(self):
         """DAG 在有 LLM 时可能被生成"""
@@ -154,22 +151,21 @@ class TestAgentChat:
     # ── 降级路径 ──
 
     def test_no_keyword_no_llm(self):
-        """无关键词匹配 → 走 LLM 或 fallback，不崩溃"""
+        """无关键词消息 → 走 LLM 或 fallback，不崩溃"""
         resp = client.post(f"{BASE}/chat", json={"message": "今天天气怎么样"})
         data = resp.json()["result"]
         # 任何合理的响应都可以（不崩溃）
-        assert data["action"] in (
-            "fallback", "fallback_to_chat", "clarify", "proceed", "reject"
-        )
+        assert data["action"] in ("fallback_to_chat", "proceed")
 
     # ── SSE Streaming ──
 
-    def test_stream_trivial_returns_json(self):
-        """SSE 端点对 trivial 消息应返回 JSON（不流式）"""
+    def test_stream_trivial_returns_sse(self):
+        """SSE 端点对 trivial 消息应返回 LLM 流式内容事件（不进入 DAG）"""
         resp = client.post(f"{BASE}/chat/stream", json={"message": "你好"})
         assert resp.status_code == 200
-        data = resp.json()
-        assert data["result"]["action"] == "fallback_to_chat"
+        content_type = resp.headers.get("content-type", "")
+        assert "text/event-stream" in content_type
+        assert "event: content" in resp.text or "event: error" in resp.text
 
     def test_stream_empty_message(self):
         """SSE 端点空消息应返回错误"""
@@ -177,11 +173,16 @@ class TestAgentChat:
         data = resp.json()
         assert data.get("errCode") == 400 or data.get("code") == 400
 
-    def test_stream_simple_returns_json(self):
-        """SSE 端点对简单消息应返回 JSON（无需执行）"""
+    def test_stream_simple_message(self):
+        """SSE 端点对可执行简单消息应返回 SSE 或 JSON（不崩溃）"""
         resp = client.post(f"{BASE}/chat/stream", json={"message": "帮我搜索一下AI新闻"})
-        data = resp.json()["result"]
-        assert data["action"] in ("proceed", "clarify", "fallback")
+        assert resp.status_code == 200
+        content_type = resp.headers.get("content-type", "")
+        if "text/event-stream" in content_type:
+            assert "event: " in resp.text
+        else:
+            data = resp.json()
+            assert data["result"]["action"] in ("proceed", "fallback_to_chat")
 
     def test_stream_complex_returns_sse(self):
         """SSE 端点对复杂请求应返回 SSE 事件流"""

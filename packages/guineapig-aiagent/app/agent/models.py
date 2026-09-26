@@ -93,18 +93,8 @@ class CapabilityInventory(BaseModel):
 class QuickFilterResult(str, Enum):
     """Phase 0 快速筛选结果"""
 
-    TRIVIAL = "trivial"  # 问候/简单应答 → 直接放行到普通对话
-    SIMPLE = "simple"  # 可能单个能力 → 进入 Phase 1 关键词扫描
-    COMPLEX = "complex"  # 明显多步 → 跳过 Phase 1, 等待 Phase 2 LLM 分析
-
-
-class ScanResult(BaseModel):
-    """Phase 1 关键词扫描的单个匹配结果"""
-
-    intent_type: str = Field(..., description="意图类型标识")
-    confidence: float = Field(..., ge=0.0, le=1.0, description="置信度 0-1")
-    matched_keyword: str = Field("", description="匹配的关键词")
-    source: str = Field("rule", description="匹配来源: rule | llm")
+    TRIVIAL = "trivial"  # 简单对话/问候 → 直接走普通对话
+    TASK = "task"  # 需要分析的任务 → 走一次 LLM 意图识别
 
 
 class DeepAnalysisResult(BaseModel):
@@ -124,23 +114,6 @@ class DeepAnalysisResult(BaseModel):
     complexity: str = Field("single_step", description="single_step | multi_step")
     estimated_steps: int = Field(1, ge=1, description="预估步骤数")
     source: str = Field("llm", description="分析来源")
-
-
-class IntentDecisionResult(BaseModel):
-    """Phase 3 综合判定结果 — 结合 Phase 0 + 1 + 2 的最终决策"""
-
-    action: str = Field(
-        ...,
-        description="最终动作: fallback | clarify | proceed | reject",
-    )
-    primary_intent: DeepAnalysisResult | None = Field(
-        None, description="LLM 深度分析结果"
-    )
-    candidates: list[ScanResult] = Field(
-        default_factory=list, description="Phase 1 候选意图"
-    )
-    confidence: float = Field(0.0, ge=0.0, le=1.0, description="综合置信度")
-    reason: str = Field("", description="决策理由")
 
 
 # ═══════════════════════════════════════════

@@ -1,17 +1,15 @@
 """
-Agent 入口路由 — 完整意图识别 Pipeline (Phase 0-3) + DAG 生成 + SSE 流式执行。
+Agent 入口路由 — 简化意图识别 (规则筛选 + 一次 LLM 意图识别) + DAG 生成 + SSE 流式执行。
 
 端点：
 - POST /agent/chat          — 同步非流式，返回意图识别 + DAG 生成结果
 - POST /agent/chat/stream   — SSE 流式，在 chat 的基础上执行 DAG 并流式推送进度
 
 流程：
-1. Phase 0: QuickFilter → trivial / simple / complex
-2. Phase 1: IntentScanner → keyword-based candidates
-3. Phase 2: DeepAnalyzer → LLM 深度分析
-4. Phase 3: IntentDecision → 综合判定
-5. DAG 生成: LLM 生成步骤计划
-6. [仅 stream] DAG 执行引擎 → SSE 事件流
+1. Phase 0: QuickFilter → trivial（简单对话）/ task（需要分析）
+2. Phase 1: DeepAnalyzer → 一次 LLM 意图识别
+3. 路由: feasible 且意图需要执行 → DAG 生成；否则直接 LLM 对话
+4. [仅 stream] DAG 执行引擎 → SSE 事件流
 """
 
 import asyncio
@@ -30,13 +28,13 @@ from app.core.log import logger
 from app.schemas.base_models import success_response, error_response
 from app.services.langfuse_client import get_langfuse, is_langfuse_enabled
 from app.agent.models import (
-    IntentDecisionResult,
+    DeepAnalysisResult,
     MCPToolInfo,
     QuickFilterResult,
     StreamEventType,
 )
 from app.agent.capability_registry import CapabilityRegistry
-from app.agent.intent import QuickFilter, IntentScanner, DeepAnalyzer, IntentDecision
+from app.agent.intent import QuickFilter, DeepAnalyzer
 from app.agent.dag import DAGGenerator
 from app.agent.executor import DAGExecutionEngine
 from app.core.llm_clients import call_with_retry_async
@@ -146,7 +144,7 @@ async def _run_intent_pipeline(
     trace_id: str | None = None,
 ) -> dict:
     """
-    执行完整意图识别 Pipeline (Phase 0-3) + DAG 生成。
+    执行简化意图识别 Pipeline (Phase 0 规则筛选 + Phase 1 LLM 意图识别) + DAG 生成。
     集成 Langfuse Trace：整个 Pipeline 作为一条 Trace 追踪。
 
     Args:
@@ -155,28 +153,22 @@ async def _run_intent_pipeline(
 
     Returns:
         dict 包含所有阶段的结果:
-        - quick_result, candidates, deep_analysis, decision, dag, inventory,
+        - quick_result, action, deep_analysis, dag, inventory,
           capabilities_formatted, mcp_tool_infos
+        action: "fallback_to_chat"（直接对话） | "proceed"（执行 DAG）
     """
     message = request.message.strip()
 
-    # Phase 0: 快速筛选
+    # Phase 0: 规则筛选 — 仅区分简单对话 / 需要分析的任务
     quick_result = QuickFilter.classify(message, request.conversation_history)
     logger.info(f"[Agent] Phase 0 筛选结果: {quick_result}")
 
-    # TRIVIAL: 提前返回，跳过 CapabilityRegistry.scan() 和后续所有阶段
+    # TRIVIAL: 提前返回，跳过扫描和所有 LLM 调用
     if quick_result == QuickFilterResult.TRIVIAL:
         return {
             "quick_result": quick_result,
-            "candidates": [],
+            "action": "fallback_to_chat",
             "deep_analysis": None,
-            "decision": IntentDecisionResult(
-                action="fallback",
-                primary_intent=None,
-                candidates=[],
-                confidence=1.0,
-                reason="问候或简单应答，走普通对话",
-            ),
             "dag": None,
             "inventory": None,
             "capabilities_formatted": "",
@@ -205,13 +197,6 @@ async def _run_intent_pipeline(
         f"servers={[m.server_name for m in mcp_tool_infos]}"
     )
 
-    candidates: list = []
-    deep_analysis = None
-    decision = None
-    dag = None
-    pipeline_input_tokens = 0
-    pipeline_output_tokens = 0
-
     inventory = await CapabilityRegistry.scan(
         mcp_servers=mcp_tool_infos,
         skills=request.skills,
@@ -219,40 +204,33 @@ async def _run_intent_pipeline(
     )
     capabilities_formatted = CapabilityRegistry.format_for_llm(inventory)
 
-    # ═══════════ Phase 1 + Phase 2: LLM 深度分析 ═══════════
+    pipeline_input_tokens = 0
+    pipeline_output_tokens = 0
+
+    # Phase 1: 一次 LLM 意图识别
     deep_analysis = await _run_llm_deep_analysis(
         request=request,
         message=message,
-        quick_result=quick_result,
         inventory=inventory,
         capabilities_formatted=capabilities_formatted,
         trace_id=trace_id,
     )
-    candidates = deep_analysis.get("candidates", []) if deep_analysis else []
-    deep_analysis = deep_analysis.get("deep_analysis") if deep_analysis else None
-    pipeline_input_tokens += _llm_analysis_tokens(
-        message, request, capabilities_formatted, deep_analysis
-    )
-
-    # 估算 DeepAnalyzer 输出 token
     if deep_analysis:
+        pipeline_input_tokens += _llm_analysis_tokens(
+            message, request, capabilities_formatted, deep_analysis
+        )
         pipeline_output_tokens += _estimate_tokens(
             json.dumps(deep_analysis.model_dump())
         )
 
-    # Phase 3: 综合判定
-    decision = IntentDecision.decide(
-        quick_result=quick_result,
-        candidates=candidates,
-        deep_analysis=deep_analysis,
-    )
-    logger.info(
-        f"[Agent] Phase 3 综合判定: action={decision.action}, "
-        f"confidence={decision.confidence}"
-    )
-
-    # DAG 生成
-    if decision.action == "proceed" and deep_analysis and deep_analysis.feasible:
+    # 路由: feasible 且意图需要执行 → 生成 DAG（单步任务也算 DAG）
+    dag = None
+    action = "fallback_to_chat"
+    if (
+        deep_analysis
+        and deep_analysis.feasible
+        and deep_analysis.intent_type not in DAGGenerator.NON_DAG_INTENTS
+    ):
         logger.info("[Agent] 触发 DAG 生成")
         # 同步 LLM 调用放入线程池，避免阻塞事件循环
         dag = await asyncio.to_thread(
@@ -269,6 +247,7 @@ async def _run_intent_pipeline(
         pipeline_input_tokens += _estimate_tokens(dag_input) + 250  # + system prompt
         if dag:
             pipeline_output_tokens += _estimate_tokens(json.dumps(dag.model_dump()))
+            action = "proceed"
             step_summary = [
                 f"{s.step_id}:{s.capability}/{s.action}" for s in dag.steps
             ]
@@ -278,12 +257,17 @@ async def _run_intent_pipeline(
             )
         else:
             logger.warning("[Agent] DAG 生成为空")
+    else:
+        logger.info(
+            f"[Agent] 无需 DAG: feasible="
+            f"{deep_analysis.feasible if deep_analysis else None}, "
+            f"intent={deep_analysis.intent_type if deep_analysis else 'unknown'}"
+        )
 
     return {
         "quick_result": quick_result,
-        "candidates": candidates,
+        "action": action,
         "deep_analysis": deep_analysis,
-        "decision": decision,
         "dag": dag,
         "inventory": inventory,
         "capabilities_formatted": capabilities_formatted,
@@ -296,61 +280,37 @@ async def _run_intent_pipeline(
 async def _run_llm_deep_analysis(
     request: AgentChatRequest,
     message: str,
-    quick_result: QuickFilterResult,
     inventory,
     capabilities_formatted: str,
     trace_id: str | None,
-) -> dict:
+) -> DeepAnalysisResult | None:
     """
-    执行 Phase 1 + Phase 2 LLM 深度分析（llm 模式）。
+    执行一次 LLM 意图识别，判断任务是否可行、是否需要生成 DAG。
 
     Returns:
-        {"candidates": [...], "deep_analysis": DeepAnalysisResult | None}
+        DeepAnalysisResult | None
     """
-    candidates: list = []
-
-    # Phase 1: 关键词扫描（仅 simple）
-    if quick_result == QuickFilterResult.SIMPLE:
-        candidates = IntentScanner.scan(message)
-        logger.info(
-            f"[Agent] Phase 1 扫描候选: "
-            f"{[f'{c.intent_type}:{c.confidence}' for c in candidates] or '无匹配'}"
-        )
-
-    # Phase 2: LLM 深度分析
-    needs_deep_analysis = (
-        quick_result == QuickFilterResult.COMPLEX
-        or (quick_result == QuickFilterResult.SIMPLE and not candidates)
-        or (candidates and candidates[0].confidence < 0.5)
+    logger.info("[Agent] 触发 LLM 意图识别")
+    # 同步 LLM 调用放入线程池，避免阻塞事件循环
+    deep_analysis = await asyncio.to_thread(
+        DeepAnalyzer.analyze,
+        user_message=message,
+        capability_inventory=inventory,
+        conversation_history=request.conversation_history,
+        capabilities_formatted=capabilities_formatted,
+        trace_id=trace_id,
     )
-    deep_analysis = None
-    if needs_deep_analysis:
+    if deep_analysis:
         logger.info(
-            f"[Agent] 触发 Phase 2 LLM 深度分析: "
-            f"complex={quick_result == QuickFilterResult.COMPLEX}, "
-            f"candidates={len(candidates)}"
+            f"[Agent] LLM 意图识别: intent={deep_analysis.intent_type}, "
+            f"complexity={deep_analysis.complexity}, "
+            f"steps={deep_analysis.estimated_steps}, "
+            f"feasible={deep_analysis.feasible}, "
+            f"confidence={deep_analysis.confidence}"
         )
-        # 同步 LLM 调用放入线程池，避免阻塞事件循环
-        deep_analysis = await asyncio.to_thread(
-            DeepAnalyzer.analyze,
-            user_message=message,
-            capability_inventory=inventory,
-            conversation_history=request.conversation_history,
-            capabilities_formatted=capabilities_formatted,
-            trace_id=trace_id,
-        )
-        if deep_analysis:
-            logger.info(
-                f"[Agent] Phase 2 深度分析: "
-                f"intent={deep_analysis.intent_type}, "
-                f"complexity={deep_analysis.complexity}, "
-                f"steps={deep_analysis.estimated_steps}, "
-                f"feasible={deep_analysis.feasible}, "
-                f"confidence={deep_analysis.confidence}"
-            )
-        else:
-            logger.warning("[Agent] Phase 2 深度分析失败/未返回结果")
-    return {"candidates": candidates, "deep_analysis": deep_analysis}
+    else:
+        logger.warning("[Agent] LLM 意图识别失败/未返回结果")
+    return deep_analysis
 
 
 def _llm_analysis_tokens(
@@ -377,9 +337,8 @@ def _build_phase_response(
 ) -> dict:
     """将 Pipeline 结果构建为标准 JSON 响应 data"""
     quick_result = pipeline_result["quick_result"]
-    candidates = pipeline_result["candidates"]
+    action = pipeline_result["action"]
     deep_analysis = pipeline_result["deep_analysis"]
-    decision = pipeline_result["decision"]
     dag = pipeline_result["dag"]
     inventory = pipeline_result["inventory"]
     capabilities_formatted = pipeline_result["capabilities_formatted"]
@@ -389,24 +348,21 @@ def _build_phase_response(
             "action": "fallback_to_chat",
             "quick_filter": quick_result.value,
             "reason": "问候或简单应答，走普通对话",
-            "candidates": [],
             "deep_analysis": None,
-            "decision": None,
             "dag": None,
             "capabilities": {},
         }
 
+    if action == "proceed":
+        reason = "任务可行，生成执行计划"
+    else:
+        reason = "LLM 判定无需 DAG，走直接对话"
+
     return {
-        "action": decision.action,
+        "action": action,
         "quick_filter": quick_result.value,
-        "reason": decision.reason,
-        "candidates": [c.model_dump() for c in candidates],
+        "reason": reason,
         "deep_analysis": deep_analysis.model_dump() if deep_analysis else None,
-        "decision": {
-            "action": decision.action,
-            "confidence": decision.confidence,
-            "reason": decision.reason,
-        },
         "dag": dag.model_dump() if dag else None,
         "capabilities": {
             "available": [c.name for c in inventory.capabilities if c.enabled],
@@ -783,7 +739,7 @@ async def agent_chat_stream(request: AgentChatRequest):
                 pipeline_result = await _run_intent_pipeline(request, trace_id=trace_id)
 
                 quick_result = pipeline_result["quick_result"]
-                decision = pipeline_result["decision"]
+                action = pipeline_result["action"]
                 dag = pipeline_result["dag"]
                 inventory = pipeline_result["inventory"]
                 deep_analysis = pipeline_result.get("deep_analysis")
@@ -794,7 +750,7 @@ async def agent_chat_stream(request: AgentChatRequest):
                             "quick_result": (
                                 str(quick_result.value) if quick_result else None
                             ),
-                            "decision_action": decision.action if decision else None,
+                            "action": action,
                             "dag_steps": len(dag.steps) if dag else 0,
                             "intent_type": (
                                 deep_analysis.intent_type if deep_analysis else None
@@ -804,91 +760,12 @@ async def agent_chat_stream(request: AgentChatRequest):
 
                 logger.info(
                     f"[Agent-Stream] Pipeline 完成: quick={quick_result.value}, "
-                    f"action={decision.action if decision else 'n/a'}, "
+                    f"action={action}, "
                     f"dag_steps={len(dag.steps) if dag else 0}"
                 )
 
-                # Trivial → SSE LLM 流式回复（跳过 DAG 执行）
-                if quick_result == QuickFilterResult.TRIVIAL:
-                    async for chunk in _direct_llm_stream(
-                        message,
-                        user_id=request.user_id,
-                        session_id=request.session_id,
-                        scene_memory=request.scene_memory,
-                        trace_id=trace_id,
-                    ):
-                        yield chunk
-                    return
-
-                # reject → SSE 流式返回 LLM 拒绝说明
-                if decision.action == "reject":
-                    logger.info(f"[Agent] 任务被拒绝: {decision.reason}")
-
-                    reject_input = (
-                        f"用户消息: {message}\n\n无法执行原因: {decision.reason}"
-                    )
-                    reject_input_tokens = _estimate_tokens(reject_input)
-
-                    # 1. rejected 事件（通知前端关闭 HITL）
-                    rejected_data = _json_compact(
-                        {
-                            "reason": decision.reason or "无法执行此任务",
-                            "original_intent": message,
-                        }
-                    )
-                    yield f"event: rejected\ndata: {rejected_data}\n\n"
-
-                    # 2. LLM 生成自然语言拒绝说明
-                    fallback = f"抱歉，我无法执行此任务。{decision.reason}"
-                    result = {"text": ""}
-                    async for ev in _stream_llm_response(
-                        "你是一个 AI 助手。用户请求你执行一项任务，但你无法完成。请用自然语言、友好的语气告诉用户为什么无法执行。回答紧凑简洁，不要有多余空行和空格。",
-                        reject_input,
-                        temperature=0.3,
-                        max_tokens=512,
-                        span_name="reject-llm-stream",
-                        span_input={
-                            "reject_reason": decision.reason,
-                            "user_message": message,
-                        },
-                        span_metadata={"source": "agent.reject_event_stream"},
-                        trace_id=trace_id,
-                        fallback_text=fallback,
-                        error_log_level="warning",
-                        error_log_prefix="[Agent] Reject LLM 失败: ",
-                        result=result,
-                    ):
-                        yield ev
-                    output_text = result["text"]
-
-                    # 3. execution_complete
-                    complete_data = _json_compact(
-                        {
-                            "status": "rejected",
-                            "reason": decision.reason,
-                            "summary": {
-                                "original_intent": message,
-                                "steps_completed": 0,
-                                "steps_total": 0,
-                            },
-                        }
-                    )
-                    yield f"event: execution_complete\ndata: {complete_data}\n\n"
-
-                    # 4. 上报指标
-                    output_tokens = _estimate_tokens(output_text)
-                    await report_chat_metrics(
-                        user_id=request.user_id,
-                        session_id=request.session_id,
-                        input_token=reject_input_tokens
-                        + pipeline_result.get("pipeline_input_tokens", 0),
-                        output_token=output_tokens
-                        + pipeline_result.get("pipeline_output_tokens", 0),
-                    )
-                    return
-
-                # fallback/clarify → SSE LLM 流式回复（无 DAG 可执行）
-                if decision.action != "proceed":
+                # 无需 DAG（trivial / LLM 判定直接对话）→ SSE LLM 流式回复
+                if action != "proceed":
                     async for chunk in _direct_llm_stream(
                         message,
                         user_id=request.user_id,

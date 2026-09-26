@@ -72,3 +72,4 @@ packages/guineapig-client/release/    # 客户端安装包
 /packages/guineapig-aiagent/.venv/
 /packages/guineapig-aiagent/data/
 /packages/guineapig-backend/bin/*
+/packages/guineapig-client/.playwright-mcp/
