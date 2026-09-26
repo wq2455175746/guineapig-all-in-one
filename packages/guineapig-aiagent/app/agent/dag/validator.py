@@ -6,11 +6,19 @@ DAG 验证器 — 确保生成的 DAG 是可执行、无循环、能力可用的
 2. 依赖的 step_id 必须存在（无悬挂引用）
 3. 无循环依赖（拓扑排序检测）
 4. 引用的能力必须在当前能力清单中可用
-5. 参数引用格式检查（{{step_id.output_key}}）
+5. 参数引用校验（{{step_id.output_key}} / {{output_key}}）— step_id 存在、
+   output_key 已声明、引用的步骤在 depends_on 中（保证执行顺序）
 """
+
+import re
 
 from app.core.log import logger
 from ..models import CapabilityInventory, DAGDefinition, DAGStep
+
+# 完整引用 {{step_id.output_key}}
+FULL_REF_PATTERN = re.compile(r"\{\{(\w+)\.(\w+)\}\}")
+# 裸引用 {{output_key}}
+BARE_REF_PATTERN = re.compile(r"\{\{(\w+)\}\}")
 
 
 class DAGValidator:
@@ -41,6 +49,7 @@ class DAGValidator:
         cls._check_step_id_uniqueness(dag, errors)
         cls._check_dangling_references(dag, errors)
         cls._check_cycle(dag, errors)
+        cls._check_param_references(dag, errors)
 
         if inventory:
             cls._normalize_capabilities(dag, inventory)
@@ -156,6 +165,71 @@ class DAGValidator:
 
         if sorted_count != len(dag.steps):
             errors.append("DAG 存在循环依赖，无法拓扑排序")
+
+    @classmethod
+    def _check_param_references(
+        cls, dag: DAGDefinition, errors: list[str]
+    ) -> None:
+        """检查步骤参数中的 {{step_id.output_key}} / {{output_key}} 引用：
+        - 引用的 step_id 必须存在
+        - 裸引用 {{output_key}} 必须由某步骤声明 output_key
+        - 被引用的步骤必须在 depends_on 中（保证执行顺序，避免先执行导致占位符无法解析）
+        """
+        all_ids = {step.step_id for step in dag.steps}
+        output_key_to_step: dict[str, str] = {}
+        for step in dag.steps:
+            if step.output_key and step.output_key not in output_key_to_step:
+                output_key_to_step[step.output_key] = step.step_id
+
+        for step in dag.steps:
+            dep_set = set(step.depends_on)
+            refs = cls._collect_refs(step.params)
+
+            for step_id, key in refs["full"]:
+                if step_id not in all_ids:
+                    errors.append(
+                        f"步骤 '{step.step_id}' 引用了不存在的步骤 "
+                        f"'{step_id}' ({{{{{step_id}.{key}}}}})"
+                    )
+                elif step_id not in dep_set:
+                    errors.append(
+                        f"步骤 '{step.step_id}' 引用 '{{{{{step_id}.{key}}}}}' "
+                        f"但未声明 depends_on=['{step_id}']"
+                    )
+
+            for output_key in refs["bare"]:
+                producer = output_key_to_step.get(output_key)
+                if producer is None:
+                    errors.append(
+                        f"步骤 '{step.step_id}' 引用了未声明的输出 "
+                        f"'{output_key}' ({{{{{output_key}}}}})"
+                    )
+                elif producer not in dep_set:
+                    errors.append(
+                        f"步骤 '{step.step_id}' 引用输出 '{{{{{output_key}}}}}'"
+                        f"（来自 '{producer}'）但未声明 depends_on=['{producer}']"
+                    )
+
+    @classmethod
+    def _collect_refs(cls, value) -> dict:
+        """递归收集参数中的引用：{"full": [(step_id, key), ...], "bare": [output_key, ...]}"""
+        refs: dict = {"full": [], "bare": []}
+        if isinstance(value, str):
+            for m in FULL_REF_PATTERN.finditer(value):
+                refs["full"].append((m.group(1), m.group(2)))
+            for m in BARE_REF_PATTERN.finditer(value):
+                refs["bare"].append(m.group(1))
+        elif isinstance(value, dict):
+            for v in value.values():
+                sub = cls._collect_refs(v)
+                refs["full"].extend(sub["full"])
+                refs["bare"].extend(sub["bare"])
+        elif isinstance(value, list):
+            for v in value:
+                sub = cls._collect_refs(v)
+                refs["full"].extend(sub["full"])
+                refs["bare"].extend(sub["bare"])
+        return refs
 
     @classmethod
     def _check_capability_availability(

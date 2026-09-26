@@ -36,6 +36,10 @@ class DAGExecutionEngine:
 
     # 参数引用模式: {{step_id.output_key}} 或 {{step_id.output}}
     PARAM_REF_PATTERN = re.compile(r"\{\{(\w+)\.(\w+)\}\}")
+    # 裸引用模式: {{output_key}} — 按步骤声明的 output_key 定位产出步骤
+    BARE_REF_PATTERN = re.compile(r"\{\{(\w+)\}\}")
+    # 未解析占位符检测（解析后仍残留 {{...}} 即视为未解析）
+    UNRESOLVED_REF_PATTERN = re.compile(r"\{\{.*?\}\}")
 
     def __init__(self, dag: DAGDefinition, context: dict | None = None):
         """
@@ -285,6 +289,25 @@ class DAGExecutionEngine:
         if step.execution_location == ExecutionLocation.CLIENT:
             # MCP 步骤：注入连接信息（含 stdio command/args/env），供 client 端执行
             client_params = self._inject_mcp_conn_params(step.params, step.capability)
+            if self._has_unresolved_refs(client_params):
+                err_msg = (
+                    f"参数包含未解析的占位符，无法下发 client 执行: "
+                    f"params={client_params}"
+                )
+                logger.warning(f"[Engine] Step {step.step_id} {err_msg}")
+                entry.status = "failed"
+                entry.error = err_msg
+                self.timeline.append(entry)
+                yield self._event(
+                    StreamEventType.STEP_FAILED,
+                    {
+                        "step_id": step.step_id,
+                        "error": err_msg,
+                        "duration_ms": self._elapsed_ms_since(step_start),
+                        "step": self._step_summary(step),
+                    },
+                )
+                return
             logger.info(
                 f"[Engine] 下发 client 步骤 {step.step_id}: "
                 f"capability={step.capability}, action={step.action}, "
@@ -388,6 +411,26 @@ class DAGExecutionEngine:
         logger.debug(
             f"[Engine] Step {step.step_id} 解析参数: {resolved_params}"
         )
+
+        # 参数含未解析占位符 → 标记失败，不执行（避免把占位符当真实数据用）
+        if self._has_unresolved_refs(resolved_params):
+            err_msg = (
+                f"参数包含未解析的占位符，无法执行: params={resolved_params}"
+            )
+            logger.warning(f"[Engine] Step {step.step_id} {err_msg}")
+            entry.status = "failed"
+            entry.error = err_msg
+            self.timeline.append(entry)
+            yield self._event(
+                StreamEventType.STEP_FAILED,
+                {
+                    "step_id": step.step_id,
+                    "error": err_msg,
+                    "duration_ms": self._elapsed_ms_since(step_start),
+                    "step": self._step_summary(step),
+                },
+            )
+            return
 
         # 对 MCP 步骤，从 context 注入连接信息（URL、transport_type、headers、stdio 启动参数）
         if step.capability.startswith("mcp_"):
@@ -642,8 +685,33 @@ class DAGExecutionEngine:
 
         return resolved
 
+    @classmethod
+    def _has_unresolved_refs(cls, params) -> bool:
+        """检查参数中是否残留未解析的 {{...}} 引用（递归 string/dict/list）"""
+        if isinstance(params, str):
+            return bool(cls.UNRESOLVED_REF_PATTERN.search(params))
+        if isinstance(params, dict):
+            return any(cls._has_unresolved_refs(v) for v in params.values())
+        if isinstance(params, list):
+            return any(cls._has_unresolved_refs(v) for v in params)
+        return False
+
+    def _output_key_step_map(self) -> dict[str, str]:
+        """output_key → step_id 映射，用于解析裸引用 {{output_key}}。
+
+        依赖顺序保证即使多个步骤声明同一 output_key，也取先声明的。
+        """
+        mapping: dict[str, str] = {}
+        dag = getattr(self, "dag", None)
+        if dag is None:
+            return mapping
+        for step in dag.steps:
+            if step.output_key and step.output_key not in mapping:
+                mapping[step.output_key] = step.step_id
+        return mapping
+
     def _resolve_string(self, text: str) -> str:
-        """替换字符串中的 {{step_id.key}} 引用"""
+        """替换字符串中的 {{step_id.output_key}} 与 {{output_key}} 引用"""
 
         def _replacer(m: re.Match) -> str:
             step_id = m.group(1)
@@ -653,7 +721,20 @@ class DAGExecutionEngine:
                 return str(result.get(key, result.get("result", m.group(0))))
             return m.group(0)  # 保留原样
 
-        return self.PARAM_REF_PATTERN.sub(_replacer, text)
+        text = self.PARAM_REF_PATTERN.sub(_replacer, text)
+
+        # 裸引用 {{output_key}} — 定位到声明该 output_key 的步骤，取其主输出文本
+        def _replacer_bare(m: re.Match) -> str:
+            output_key = m.group(1)
+            step_id = self._output_key_step_map().get(output_key)
+            if step_id and step_id in self.step_results:
+                result = self.step_results[step_id]
+                return str(
+                    result.get("result", result.get(output_key, m.group(0)))
+                )
+            return m.group(0)  # 保留原样
+
+        return self.BARE_REF_PATTERN.sub(_replacer_bare, text)
 
     # ── 辅助方法 ──
 

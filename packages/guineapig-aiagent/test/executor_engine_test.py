@@ -120,6 +120,130 @@ class TestResolveParams:
         resolved = engine._resolve_params(dag.steps[1].params)
         assert resolved["nested"]["input"] == "nested_data"
 
+    def test_bare_output_key_reference(self):
+        """回归：裸引用 {{output_key}} 应解析为声明该 output_key 的步骤结果。
+
+        复现问题：LLM 生成 write_file 步骤时引用前序输出用了裸格式 {{travel_plan}}，
+        旧解析器只认 {{step_id.output_key}}（正则要求点号），导致占位符原样写入文件。
+        """
+        dag = DAGDefinition(steps=[
+            DAGStep(step_id="s1", capability="web_search", action="search",
+                    params={"query": "广州天气"}),
+            DAGStep(step_id="s2", capability="llm_chat", action="generate",
+                    output_key="travel_plan",
+                    params={"prompt": "{{s1.result}}"}),
+            DAGStep(step_id="s3", capability="mcp_filesystem", action="write_file",
+                    execution_location=ExecutionLocation.CLIENT,
+                    params={
+                        "tool": "write_file",
+                        "arguments": {
+                            "path": "/Users/test/Downloads/travel.md",
+                            "content": "{{travel_plan}}",
+                        },
+                    }),
+        ])
+        engine = DAGExecutionEngine(dag)
+        engine.step_results["s1"] = {"result": "weather info"}
+        engine.step_results["s2"] = {
+            "result": "# 广州三日游计划\nDay1...", "char_count": 20,
+        }
+
+        # 与 engine._execute_step 的 client 路径一致：经 _inject_mcp_conn_params 走 _resolve_params
+        resolved = engine._resolve_params(dag.steps[2].params)
+        args = resolved["arguments"]
+        assert args["content"] == "# 广州三日游计划\nDay1..."
+        assert "{{travel_plan}}" not in args["content"]
+
+    def test_bare_reference_unresolved_kept(self):
+        """裸引用但无对应 output_key 时保持原样"""
+        engine = DAGExecutionEngine.__new__(DAGExecutionEngine)
+        engine.dag = DAGDefinition(steps=[])
+        engine.step_results = {}
+        text = "{{missing_output}}"
+        resolved = engine._resolve_string(text)
+        assert resolved == "{{missing_output}}"
+
+
+class TestParamReferenceValidation:
+    """参数引用校验 — 引用的 step_id 必须存在、output_key 必须被声明、依赖必须声明"""
+
+    def _make_inventory(self):
+        from app.agent.models import (
+            CapabilityInfo,
+            CapabilityType,
+            ExecutionLocation,
+        )
+
+        return CapabilityInventory(capabilities=[
+            CapabilityInfo(
+                type=CapabilityType.WEB_SEARCH, name="web_search",
+                description="搜索", execution_location=ExecutionLocation.SERVER,
+            ),
+            CapabilityInfo(
+                type=CapabilityType.LLM_CHAT, name="llm_chat",
+                description="LLM", execution_location=ExecutionLocation.SERVER,
+            ),
+            CapabilityInfo(
+                type=CapabilityType.MCP, name="mcp_filesystem",
+                description="文件系统", execution_location=ExecutionLocation.CLIENT,
+            ),
+        ])
+
+    def _validate(self, dag):
+        from app.agent.dag.validator import DAGValidator
+
+        return DAGValidator.validate(dag, self._make_inventory())
+
+    def test_valid_references_pass(self):
+        """完整引用 + 裸引用 + 正确 depends_on → 通过"""
+        dag = DAGDefinition(steps=[
+            DAGStep(step_id="s1", capability="web_search", action="search"),
+            DAGStep(step_id="s2", capability="llm_chat", action="generate",
+                    output_key="travel_plan",
+                    params={"prompt": "{{s1.result}}"}, depends_on=["s1"]),
+            DAGStep(step_id="s3", capability="mcp_filesystem", action="write",
+                    execution_location=ExecutionLocation.CLIENT,
+                    params={"arguments": {"content": "{{travel_plan}}"}},
+                    depends_on=["s2"]),
+        ])
+        ok, errors = self._validate(dag)
+        assert ok, errors
+
+    def test_reference_to_nonexistent_step_fails(self):
+        """引用不存在的 step_id → 校验失败"""
+        dag = DAGDefinition(steps=[
+            DAGStep(step_id="s1", capability="web_search", action="search"),
+            DAGStep(step_id="s2", capability="llm_chat", action="summarize",
+                    params={"prompt": "{{s9.result}}"}, depends_on=["s1"]),
+        ])
+        ok, errors = self._validate(dag)
+        assert not ok
+        assert any("s9" in e for e in errors)
+
+    def test_bare_reference_to_undeclared_output_key_fails(self):
+        """裸引用 {{travel_plan}} 但无步骤声明该 output_key → 校验失败"""
+        dag = DAGDefinition(steps=[
+            DAGStep(step_id="s1", capability="web_search", action="search"),
+            DAGStep(step_id="s2", capability="mcp_filesystem", action="write",
+                    execution_location=ExecutionLocation.CLIENT,
+                    params={"arguments": {"content": "{{travel_plan}}"}},
+                    depends_on=["s1"]),
+        ])
+        ok, errors = self._validate(dag)
+        assert not ok
+        assert any("travel_plan" in e for e in errors)
+
+    def test_missing_depends_on_fails(self):
+        """引用了前序步骤输出但未声明 depends_on → 校验失败"""
+        dag = DAGDefinition(steps=[
+            DAGStep(step_id="s1", capability="web_search", action="search"),
+            DAGStep(step_id="s2", capability="llm_chat", action="summarize",
+                    params={"prompt": "{{s1.result}}"}),
+        ])
+        ok, errors = self._validate(dag)
+        assert not ok
+        assert any("depends_on" in e for e in errors)
+
 
 class TestDependenciesResolved:
     """前置依赖检查测试"""
@@ -222,6 +346,24 @@ class TestStreamEvents:
         assert hasattr(event, "data")
         assert hasattr(event, "timestamp")
         assert isinstance(event.data, dict)
+
+    @pytest.mark.asyncio
+    async def test_step_with_unresolved_placeholder_fails(self):
+        """回归：步骤参数含未解析占位符时应标记失败，不能静默下发垃圾参数"""
+        dag = DAGDefinition(steps=[
+            DAGStep(
+                step_id="s1", capability="llm_chat", action="write",
+                params={"prompt": "{{missing.ref}}"},
+            ),
+        ])
+        engine = DAGExecutionEngine(dag)
+        events = []
+        async for event in engine.execute():
+            events.append(event)
+
+        event_types = [e.event for e in events]
+        assert StreamEventType.STEP_FAILED.value in event_types
+        assert StreamEventType.STEP_COMPLETED.value not in event_types
 
 
 class TestMatchMcpServer:
