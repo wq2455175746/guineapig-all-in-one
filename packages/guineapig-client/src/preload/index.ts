@@ -69,6 +69,40 @@ contextBridge.exposeInMainWorld('electronAPI', {
   }) => ipcRenderer.invoke('fetch-mcp-resources', params),
 
   /**
+   * 调用 MCP Server 的指定工具（callTool），支持 stdio / sse / streamable-http
+   */
+  callMcpTool: (params: {
+    type?: string
+    server_name?: string
+    command?: string
+    args?: string[] | string
+    env?: Record<string, string>
+    url?: string
+    headers?: Record<string, string> | string
+    tool: string
+    arguments?: any
+    timeout?: number
+  }) => ipcRenderer.invoke('call-mcp-tool', params),
+
+  /**
+   * 预热 MCP 连接（仅建立连接不调工具，提前 spawn stdio 进程）
+   */
+  prepareMcpConnection: (params: {
+    type?: string
+    server_name?: string
+    command?: string
+    args?: string[] | string
+    env?: Record<string, string>
+    url?: string
+    headers?: Record<string, string> | string
+  }) => ipcRenderer.invoke('prepare-mcp-connection', params),
+
+  /**
+   * 关闭全部 MCP 连接（DAG 执行完成后释放 stdio 子进程）
+   */
+  closeMcpConnections: () => ipcRenderer.invoke('close-mcp-connections'),
+
+  /**
    * 切换开发者工具（F12）
    */
   toggleDevtools: () => ipcRenderer.send('toggle-devtools'),

@@ -156,6 +156,32 @@
         <Button label="确认修改" severity="contrast" @click="confirmModify()" />
       </template>
     </Dialog>
+
+    <!-- ══════ MCP 工具执行确认对话框 ══════ -->
+    <Dialog v-model:visible="mcpConfirmVisible" header="确认执行 MCP 工具" :modal="true" :style="{ width: '520px' }">
+      <div v-if="mcpConfirmStep" class="hitl-modify-form">
+        <div class="hitl-modify-field">
+          <label>能力: {{ mcpConfirmStep.capability }}</label>
+        </div>
+        <div class="hitl-modify-field">
+          <label>Server: {{ mcpConfirmStep.params?.server_name || '-' }}</label>
+        </div>
+        <div class="hitl-modify-field">
+          <label>工具: {{ mcpConfirmStep.params?.tool }}</label>
+        </div>
+        <div class="hitl-modify-field">
+          <label>参数:</label>
+          <pre class="hitl-mcp-args">{{ formatJson(mcpConfirmStep.params?.arguments) }}</pre>
+        </div>
+        <div v-if="mcpConfirmStep.action" class="hitl-modify-field">
+          <label>操作说明: {{ mcpConfirmStep.action }}</label>
+        </div>
+      </div>
+      <template #footer>
+        <Button label="取消" severity="secondary" outlined @click="cancelMcpConfirm()" />
+        <Button label="确认执行" severity="contrast" @click="confirmMcpExecute()" />
+      </template>
+    </Dialog>
   </div>
 </template>
 
@@ -309,35 +335,125 @@ function confirmModify() {
 // 客户端执行委托
 // ═══════════════════════════════════════════
 
+const mcpConfirmVisible = ref(false)
+const mcpConfirmStep = ref<AgentStep | null>(null)
+
 async function handleDelegate(step: AgentStep) {
   try {
-    // 尝试通过 Electron IPC 执行
-    let result: Record<string, any> = {}
-    if (step.capability === 'cli') {
-      const command = step.params?.command || step.action
-      if (window.electronAPI?.executeCommand) {
-        const execResult = await window.electronAPI.executeCommand({ command, description: step.action })
-        result = execResult
-      } else {
-        result = { stdout: 'Electron IPC 不可用', stderr: '', exitCode: -1 }
-      }
-    } else if (step.capability === 'skill') {
-      result = { note: 'Skill 执行需要 Skill Service 支持', status: 'pending' }
-    } else {
-      // MCP stdio 或其他客户端能力
-      result = { note: `客户端能力 '${step.capability}' 执行`, status: 'delegated' }
+    // MCP 工具调用：先弹出确认对话框，用户确认后才真正执行
+    if (step.capability.startsWith('mcp_') && step.params?.tool) {
+      mcpConfirmStep.value = step
+      mcpConfirmVisible.value = true
+      return
     }
-
-    const error = result.error || (result.exitCode !== undefined && result.exitCode !== 0 ? `退出码: ${result.exitCode}` : '')
-    emit('delegate-result', step.step_id, step.capability, result, error || '')
+    await executeDelegate(step)
   } catch (e: any) {
-    emit('delegate-result', step.step_id, step.capability, null, e.message || String(e))
+    const errMsg = e?.message || String(e)
+    emit('delegate-result', step.step_id, step.capability, { status: 'error', error: errMsg }, errMsg)
   }
+}
+
+/** 用户确认执行 MCP 工具 */
+async function confirmMcpExecute() {
+  const step = mcpConfirmStep.value
+  mcpConfirmVisible.value = false
+  mcpConfirmStep.value = null
+  if (!step) return
+  try {
+    await executeDelegate(step)
+  } catch (e: any) {
+    const errMsg = e?.message || String(e)
+    emit('delegate-result', step.step_id, step.capability, { status: 'error', error: errMsg }, errMsg)
+  }
+}
+
+/** 用户取消执行 MCP 工具 */
+function cancelMcpConfirm() {
+  const step = mcpConfirmStep.value
+  mcpConfirmVisible.value = false
+  mcpConfirmStep.value = null
+  if (!step) return
+  const errMsg = '用户取消执行 MCP 工具'
+  emit('delegate-result', step.step_id, step.capability, { status: 'error', error: errMsg }, errMsg)
+}
+
+/** 实际执行委托步骤（cli / skill / mcp / 其他） */
+async function executeDelegate(step: AgentStep) {
+  let result: Record<string, any> = {}
+  if (step.capability === 'cli') {
+    const command = step.params?.command || step.action
+    if (window.electronAPI?.executeCommand) {
+      const execResult = await window.electronAPI.executeCommand({ command, description: step.action })
+      result = execResult
+    } else {
+      result = { stdout: 'Electron IPC 不可用', stderr: '', exitCode: -1 }
+    }
+  } else if (step.capability === 'skill') {
+    result = { note: 'Skill 执行需要 Skill Service 支持', status: 'pending' }
+  } else if (step.capability.startsWith('mcp_') && step.params?.tool) {
+    // MCP 工具调用：使用 aiagent 注入的连接参数（含 stdio command/args/env）执行
+    // 注意：step.params 来自 Vue reactive 数组，Proxy 无法被 Electron IPC 结构化克隆，
+    // 必须先深拷贝为纯 JSON 再传给主进程，否则会抛 "An object could not be cloned."
+    const p = toPlain(step.params)
+    console.warn('[HITL] 下发 MCP 工具调用参数:', JSON.stringify({
+      capability: step.capability,
+      server_name: p.server_name,
+      transport_type: p.transport_type,
+      command: p.command,
+      args: p.args,
+      env: p.env,
+      mcp_url: p.mcp_url,
+      headers: p.headers,
+      tool: p.tool,
+      arguments: p.arguments,
+      timeout: p.timeout,
+    }))
+    const callResult = await window.electronAPI.callMcpTool({
+      type: p.transport_type || 'stdio',
+      server_name: p.server_name,
+      command: p.command,
+      args: p.args,
+      env: p.env,
+      url: p.mcp_url,
+      headers: p.headers,
+      tool: p.tool,
+      arguments: p.arguments || {},
+      timeout: p.timeout || 30000,
+    })
+    result = {
+      status: callResult.isError ? 'error' : 'completed',
+      isError: callResult.isError,
+      result: callResult.result,
+      content: callResult.content,
+      note: `MCP 工具 '${step.capability}' 执行完成`,
+    }
+  } else {
+    // 其他客户端能力（无 MCP 工具参数）
+    result = { note: `客户端能力 '${step.capability}' 执行`, status: 'delegated' }
+  }
+
+  const error = result.error || (result.exitCode !== undefined && result.exitCode !== 0 ? `退出码: ${result.exitCode}` : '')
+  emit('delegate-result', step.step_id, step.capability, result, error || '')
 }
 
 // ═══════════════════════════════════════════
 // 工具函数
 // ═══════════════════════════════════════════
+
+function formatJson(value: any): string {
+  if (value === undefined || value === null) return '-'
+  try {
+    return JSON.stringify(value, null, 2)
+  } catch {
+    return String(value)
+  }
+}
+
+/** 深拷贝为纯 JSON 对象（剥离 Vue reactive Proxy，否则 IPC 结构化克隆会抛 DataCloneError） */
+function toPlain<T>(value: T): T {
+  if (value === null || typeof value !== 'object') return value
+  return JSON.parse(JSON.stringify(value))
+}
 
 function formatDuration(ms: number): string {
   if (!ms) return ''
@@ -626,6 +742,18 @@ function truncateText(text: string, maxLen: number): string {
   color: #666;
   display: block;
   margin-bottom: 2px;
+}
+
+.hitl-mcp-args {
+  background: #f5f5f5;
+  border: 1px solid #e5e5e5;
+  border-radius: 6px;
+  padding: 8px;
+  font-size: 0.8rem;
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 
 .color--success {

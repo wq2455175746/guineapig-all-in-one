@@ -4,6 +4,8 @@ Phase 1: 关键词意图扫描 — 基于关键词映射表快速识别候选意
 当 Phase 0 判定为 simple 时进入本阶段，通过关键词匹配返回候选意图列表。
 """
 
+from app.core.log import logger
+
 from ..models import ScanResult
 
 
@@ -105,4 +107,8 @@ class IntentScanner:
         results = list(matched.values())
         results.sort(key=lambda r: r.confidence, reverse=True)
 
+        logger.debug(
+            f"[IntentScanner] 关键词扫描: "
+            f"{[f'{r.intent_type}({r.matched_keyword}:{r.confidence})' for r in results] or '无匹配'}"
+        )
         return results

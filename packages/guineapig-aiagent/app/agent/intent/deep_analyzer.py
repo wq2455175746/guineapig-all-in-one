@@ -143,7 +143,14 @@ class DeepAnalyzer:
             raw = completion.choices[0].message.content
             logger.debug(f"[DeepAnalyzer] LLM 原始回复: {raw[:1000]}...")
 
-            return cls._parse_response(raw)
+            result = cls._parse_response(raw)
+            logger.info(
+                f"[DeepAnalyzer] 分析完成: intent={result.intent_type}, "
+                f"complexity={result.complexity}, "
+                f"steps={result.estimated_steps}, "
+                f"feasible={result.feasible}, confidence={result.confidence}"
+            )
+            return result
 
         except Exception as e:
             logger.error(f"[DeepAnalyzer] LLM 调用失败: {e}")

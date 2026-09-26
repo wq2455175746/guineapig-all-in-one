@@ -33,7 +33,9 @@ class AgentDelegateResultRequest(AgentSessionRequest):
     """delegate 结果回传请求"""
     step_id: str = Field(..., description="步骤 ID")
     capability: str = Field("", description="能力名称")
-    result: dict = Field(default_factory=dict, description="执行结果")
+    result: dict | None = Field(
+        default=None, description="执行结果（失败时为 None，错误信息走 error 字段）"
+    )
     error: str = Field("", description="错误信息")
 
 
@@ -87,7 +89,7 @@ async def agent_delegate_result(request: AgentDelegateResultRequest):
     )
 
     result = {
-        "result": request.result,
+        "result": request.result or {},
         "error": request.error,
     }
     success = await AgentEventManager.deliver_delegate(

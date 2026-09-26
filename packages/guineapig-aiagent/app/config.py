@@ -80,6 +80,11 @@ class Settings(BaseSettings):
     # 网络搜索配置
     SEARXNG_URL: str = "http://localhost:8484"
 
+    # 是否主动调用 MCP list_tools() 刷新工具 schema（默认关闭）。
+    # MCP tools 由 client 注册时同步到数据库（backend 透传含 input_schema 的快照），
+    # 一般不会频繁变化，无需每次请求刷新。
+    MCP_TOOLS_REFRESH: bool = False
+
     # RAG 注入上下文 token 预算（system + context 总和上限，超出裁剪/截断）
     RAG_CONTEXT_TOKEN_BUDGET: int = 8000
 

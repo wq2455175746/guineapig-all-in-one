@@ -46,6 +46,17 @@ class MCPToolInfo(BaseModel):
         default_factory=dict,
         description="MCP 请求头（仅 sse/streamable_http 使用）",
     )
+    command: str = Field(
+        "", description="stdio 启动命令（仅 stdio 使用，client 端执行）"
+    )
+    args: list[str] = Field(
+        default_factory=list,
+        description="stdio 启动命令参数（仅 stdio 使用，client 端执行）",
+    )
+    env: dict = Field(
+        default_factory=dict,
+        description="stdio 启动环境变量（仅 stdio 使用，client 端执行）",
+    )
     tools: list[Any] = Field(
         default_factory=list,
         description="该服务提供的工具列表，每项含 name/description",

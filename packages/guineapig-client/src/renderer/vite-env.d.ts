@@ -221,6 +221,21 @@ interface Window {
     fetchMcpResources: (params: McpFetchParams) => Promise<McpFetchResult>
 
     /**
+     * 调用 MCP Server 的指定工具（callTool），支持 stdio / sse / streamable-http
+     */
+    callMcpTool: (params: McpCallToolParams) => Promise<McpCallToolResult>
+
+    /**
+     * 预热 MCP 连接（仅建立连接不调工具，提前 spawn stdio 进程）
+     */
+    prepareMcpConnection: (params: McpCallToolParams) => Promise<{ connected: boolean; key: string; reused: boolean }>
+
+    /**
+     * 关闭全部 MCP 连接（DAG 执行完成后释放 stdio 子进程）
+     */
+    closeMcpConnections: () => Promise<{ closed: number }>
+
+    /**
      * 切换开发者工具（F12）
      */
     toggleDevtools: () => void
@@ -332,6 +347,27 @@ interface McpFetchResult {
   tools: McpToolInfo[]
   resources: McpResourceInfo[]
   prompts: McpPromptInfo[]
+}
+
+// ========== MCP 工具调用类型 ==========
+
+interface McpCallToolParams {
+  type?: string
+  server_name?: string
+  command?: string
+  args?: string[] | string
+  env?: Record<string, string>
+  url?: string
+  headers?: Record<string, string> | string
+  tool: string
+  arguments?: any
+  timeout?: number
+}
+
+interface McpCallToolResult {
+  result: any
+  isError: boolean
+  content: any[]
 }
 
 interface McpToolInfo {

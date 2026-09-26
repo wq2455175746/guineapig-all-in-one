@@ -2,7 +2,7 @@
 
 import pytest
 
-from app.services.skill_load_service import parse_commands
+from app.services.skill_load_service import inject_skill_system_prompt, parse_commands
 
 
 class TestParseCommands:
@@ -77,3 +77,42 @@ class TestParseCommands:
         clean, cmds = parse_commands(content)
         assert len(cmds) == 1
         assert cmds[0]["command"] == "ls"
+
+
+class TestCommandGenerationRulesPrompt:
+    """命令生成规则 prompt 必须约束 LLM 不要使用 shell 重定向/管道等元字符。
+
+    回归：LLM 曾生成 `cat > ~/Downloads/x.doc << 'EOF' ... EOF`，
+    被 client 端 execute-command 参数安全校验拒绝（SAFE_ARG_TOKEN）。
+    """
+
+    def _system_prompt(self) -> str:
+        messages = inject_skill_system_prompt(
+            [{"role": "user", "content": "hi"}],
+            skill_context="",
+        )
+        system = next(m for m in messages if m.get("role") == "system")
+        return system["content"]
+
+    def test_prompt_forbids_shell_redirection(self):
+        prompt = self._system_prompt()
+        assert "redirection" in prompt
+        assert "heredoc" in prompt
+        assert ">>" in prompt
+        assert "|" in prompt
+
+    def test_prompt_instructs_file_write_with_whitelisted_binaries(self):
+        prompt = self._system_prompt()
+        assert "python3" in prompt
+        assert "printf" in prompt
+        assert "cp" in prompt
+
+    def test_prompt_appends_to_existing_system_message(self):
+        messages = [
+            {"role": "system", "content": "base system"},
+            {"role": "user", "content": "hi"},
+        ]
+        out = inject_skill_system_prompt(messages, skill_context="")
+        assert len(out) == 2
+        assert "base system" in out[0]["content"]
+        assert "Command Generation Rules" in out[0]["content"]

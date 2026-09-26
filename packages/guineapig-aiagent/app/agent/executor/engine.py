@@ -266,6 +266,11 @@ class DAGExecutionEngine:
         )
 
         # 通知步骤开始
+        logger.info(
+            f"[Engine] 开始执行步骤 {step.step_id}: "
+            f"capability={step.capability}, action={step.action}, "
+            f"loc={step.execution_location.value}"
+        )
         yield self._event(
             StreamEventType.STEP_STARTED,
             {
@@ -278,13 +283,20 @@ class DAGExecutionEngine:
 
         # Client 端能力 → 等待客户端执行
         if step.execution_location == ExecutionLocation.CLIENT:
+            # MCP 步骤：注入连接信息（含 stdio command/args/env），供 client 端执行
+            client_params = self._inject_mcp_conn_params(step.params, step.capability)
+            logger.info(
+                f"[Engine] 下发 client 步骤 {step.step_id}: "
+                f"capability={step.capability}, action={step.action}, "
+                f"params={client_params}"
+            )
             yield self._event(
                 StreamEventType.STEP_AWAITING_CLIENT,
                 {
                     "step_id": step.step_id,
                     "capability": step.capability,
                     "action": step.action,
-                    "params": step.params,
+                    "params": client_params,
                 },
             )
 
@@ -315,6 +327,11 @@ class DAGExecutionEngine:
                         t if t.step_id != step.step_id else entry for t in self.timeline
                     ]
 
+                    logger.info(
+                        f"[Engine] Client step {step.step_id} 完成: "
+                        f"duration={entry.duration_ms}ms, "
+                        f"result={entry.result_summary[:120]}"
+                    )
                     yield self._event(
                         StreamEventType.STEP_COMPLETED,
                         {
@@ -368,27 +385,17 @@ class DAGExecutionEngine:
 
         # 解析参数中的引用
         resolved_params = self._resolve_params(step.params)
+        logger.debug(
+            f"[Engine] Step {step.step_id} 解析参数: {resolved_params}"
+        )
 
-        # 对 MCP 步骤，从 context 注入连接信息（URL、transport_type、headers）
+        # 对 MCP 步骤，从 context 注入连接信息（URL、transport_type、headers、stdio 启动参数）
         if step.capability.startswith("mcp_"):
             matched_srv = self._match_mcp_server(step.capability)
             if matched_srv is not None:
-                if isinstance(matched_srv, dict):
-                    resolved_params.setdefault("mcp_url", matched_srv.get("mcp_url", ""))
-                    resolved_params.setdefault(
-                        "transport_type", matched_srv.get("transport_type", "")
-                    )
-                    resolved_params.setdefault("headers", matched_srv.get("headers", {}))
-                else:
-                    resolved_params.setdefault(
-                        "mcp_url", getattr(matched_srv, "mcp_url", "")
-                    )
-                    resolved_params.setdefault(
-                        "transport_type", getattr(matched_srv, "transport_type", "")
-                    )
-                    resolved_params.setdefault(
-                        "headers", getattr(matched_srv, "headers", {})
-                    )
+                resolved_params = self._inject_conn_params(
+                    resolved_params, matched_srv
+                )
 
         # 执行（带重试）
         result = None
@@ -443,6 +450,12 @@ class DAGExecutionEngine:
             entry.result_summary = self._summarize_result(result)
             self.timeline.append(entry)
 
+            logger.info(
+                f"[Engine] Step {step.step_id} 完成: "
+                f"capability={step.capability}, "
+                f"duration={entry.duration_ms}ms, "
+                f"result={entry.result_summary[:120]}"
+            )
             yield self._event(
                 StreamEventType.STEP_COMPLETED,
                 {
@@ -553,6 +566,41 @@ class DAGExecutionEngine:
         return True
 
     # ── 数据流 ──
+
+    def _inject_mcp_conn_params(self, params: dict, capability: str) -> dict:
+        """为 MCP 步骤注入连接信息（含 stdio command/args/env），供 client 端执行。"""
+        if not capability.startswith("mcp_"):
+            return dict(params)
+        resolved = self._resolve_params(params)
+        matched_srv = self._match_mcp_server(capability)
+        if matched_srv is not None:
+            resolved = self._inject_conn_params(resolved, matched_srv)
+        return resolved
+
+    @staticmethod
+    def _inject_conn_params(params: dict, matched_srv) -> dict:
+        """将匹配到的 MCP server 连接信息写入 params（dict 或 MCPToolInfo 对象）。"""
+        if isinstance(matched_srv, dict):
+            params.setdefault("mcp_url", matched_srv.get("mcp_url", ""))
+            params.setdefault(
+                "transport_type", matched_srv.get("transport_type", "")
+            )
+            params.setdefault("headers", matched_srv.get("headers", {}))
+            params.setdefault("command", matched_srv.get("command", ""))
+            params.setdefault("args", matched_srv.get("args", []))
+            params.setdefault("env", matched_srv.get("env", {}))
+            params.setdefault("server_name", matched_srv.get("server_name", ""))
+        else:
+            params.setdefault("mcp_url", getattr(matched_srv, "mcp_url", ""))
+            params.setdefault(
+                "transport_type", getattr(matched_srv, "transport_type", "")
+            )
+            params.setdefault("headers", getattr(matched_srv, "headers", {}))
+            params.setdefault("command", getattr(matched_srv, "command", ""))
+            params.setdefault("args", getattr(matched_srv, "args", []))
+            params.setdefault("env", getattr(matched_srv, "env", {}))
+            params.setdefault("server_name", getattr(matched_srv, "server_name", ""))
+        return params
 
     def _match_mcp_server(self, capability: str):
         """将 MCP 步骤 capability 定位到对应的 MCP server。

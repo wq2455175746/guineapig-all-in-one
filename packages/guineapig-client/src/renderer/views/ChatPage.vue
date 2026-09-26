@@ -480,11 +480,31 @@ function handleWSMessage(env: any) {
 
     case 'chat.agent_delegate': {
       const delId = env.payload?.step_id || ''
+      const delCapability = env.payload?.capability || ''
+      const delParams = env.payload?.params || {}
       updateAgentStepStatus(delId, 'awaiting_client', {
-        params: env.payload?.params || {},
+        params: delParams,
       })
       agentStatus.value = 'awaiting_client'
       showHITL.value = true
+      // MCP 步骤：自动预热连接（提前 spawn stdio 进程，不等待用户点击执行）
+      if (delCapability.startsWith('mcp_') && delParams?.tool) {
+        // 剥离 Vue reactive Proxy，避免 IPC 结构化克隆抛 DataCloneError
+        const plain = JSON.parse(JSON.stringify(delParams))
+        window.electronAPI?.prepareMcpConnection({
+          type: plain.transport_type || 'stdio',
+          server_name: plain.server_name,
+          command: plain.command,
+          args: plain.args,
+          env: plain.env,
+          url: plain.mcp_url,
+          headers: plain.headers,
+        }).then(() => {
+          console.warn(`[ChatPage] MCP 连接已预热: ${plain.server_name || delCapability}`)
+        }).catch((e: any) => {
+          console.warn(`[ChatPage] MCP 连接预热失败: ${plain.server_name || delCapability} | ${e?.message || e}`)
+        })
+      }
       break
     }
 
@@ -500,6 +520,8 @@ function handleWSMessage(env: any) {
       isStreaming.value = false
       // 执行完成后关闭 HITL 面板，回到主对话
       showHITL.value = false
+      // DAG 执行结束，释放 MCP stdio 子进程连接
+      window.electronAPI?.closeMcpConnections?.().catch(() => {})
       break
     }
 

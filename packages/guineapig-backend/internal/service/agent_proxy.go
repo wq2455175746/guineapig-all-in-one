@@ -23,8 +23,8 @@ import (
 
 // agentSSEEvent 表示 aiagent /agent/chat/stream 返回的 SSE 事件
 type agentSSEEvent struct {
-	Event string                 `json:"-"`         // event type (from "event:" line)
-	Data  map[string]interface{} `json:"data"`       // parsed JSON from "data:" line
+	Event string                 `json:"-"`    // event type (from "event:" line)
+	Data  map[string]interface{} `json:"data"` // parsed JSON from "data:" line
 }
 
 // ========== Agent 代理流 — 调用 aiagent /agent/chat/stream ==========
@@ -163,10 +163,10 @@ func (h *Hub) proxyAiAgentAgentStream(
 					From: "aiagent",
 					To:   "client",
 					Payload: map[string]any{
-						"step_id":     dataMap["step_id"],
-						"capability":  dataMap["capability"],
-						"action":      dataMap["action"],
-						"step":        dataMap["step"],
+						"step_id":    dataMap["step_id"],
+						"capability": dataMap["capability"],
+						"action":     dataMap["action"],
+						"step":       dataMap["step"],
 					},
 					Meta: &response.WSMeta{
 						ConversationID: conversationID,
@@ -273,7 +273,7 @@ func (h *Hub) proxyAiAgentAgentStream(
 					})
 				}
 
-		case "log":
+			case "log":
 				h.sendToClient(client, &response.WSEnvelope{
 					Type: "chat.agent_log",
 					From: "aiagent",
@@ -521,9 +521,9 @@ func (h *Hub) handleAgentSend(client *ClientConnection, env *response.WSEnvelope
 				"agent_result": finalData,
 			}
 			h.sendToClient(client, &response.WSEnvelope{
-				Type: "chat.done",
-				From: "backend",
-				To:   "client",
+				Type:    "chat.done",
+				From:    "backend",
+				To:      "client",
 				Payload: donePayload,
 				Meta: &response.WSMeta{
 					ConversationID: convID,
@@ -709,7 +709,7 @@ func (h *Hub) handleAgentModifyStep(client *ClientConnection, env *response.WSEn
 		"capability": "",
 		"result": map[string]any{
 			"modified_params": params,
-			"note":           "参数已由用户修改",
+			"note":            "参数已由用户修改",
 		},
 		"error": "",
 	})
@@ -766,13 +766,13 @@ func (h *Hub) loadUserMcpServers(userID int64) []map[string]any {
 
 	// 传输类型映射
 	typeMap := map[string]string{
-		"stdio":         "stdio",
-		"sse":           "sse",
+		"stdio":          "stdio",
+		"sse":            "sse",
 		"streamablehttp": "streamable_http",
 	}
 
 	for _, item := range items {
-		// 解析 tools JSON（包含 name 和 description）
+		// 解析 tools JSON（包含 name / description / input_schema）
 		tools := make([]map[string]any, 0)
 		if item.McpTools != nil && *item.McpTools != "" {
 			var parsed []map[string]any
@@ -783,10 +783,16 @@ func (h *Hub) loadUserMcpServers(userID int64) []map[string]any {
 						continue
 					}
 					desc, _ := t["description"].(string)
-					tools = append(tools, map[string]any{
+					tool := map[string]any{
 						"name":        name,
 						"description": desc,
-					})
+					}
+					// 保留完整 input_schema（含参数签名），
+					// 供 aiagent DAG 生成时构造正确的工具调用参数（含 stdio 类型）
+					if schema, ok := t["input_schema"]; ok && schema != nil {
+						tool["input_schema"] = schema
+					}
+					tools = append(tools, tool)
 				}
 			}
 		}
@@ -796,28 +802,57 @@ func (h *Hub) loadUserMcpServers(userID int64) []map[string]any {
 			transportType = item.McpType
 		}
 
-		// 从 mcp_body 解析 URL 和 headers（仅非 stdio 类型需要）
+		// 从 mcp_body 解析连接信息：非 stdio → url/headers；stdio → command/args/env
 		mcpURL := ""
 		headers := make(map[string]any)
-		if item.McpBody != nil && *item.McpBody != "" && transportType != "stdio" {
+		command := ""
+		args := make([]string, 0)
+		env := make(map[string]string)
+		if item.McpBody != nil && *item.McpBody != "" {
 			var bodyMap map[string]any
 			if err := json.Unmarshal([]byte(*item.McpBody), &bodyMap); err == nil {
-				if u, ok := bodyMap["url"].(string); ok {
-					mcpURL = u
-				}
-				if h, ok := bodyMap["headers"].(map[string]any); ok {
-					headers = h
+				if transportType == "stdio" {
+					if c, ok := bodyMap["command"].(string); ok {
+						command = c
+					}
+					if a, ok := bodyMap["args"].([]any); ok {
+						for _, av := range a {
+							if s, ok := av.(string); ok {
+								args = append(args, s)
+							}
+						}
+					}
+					if e, ok := bodyMap["env"].(map[string]any); ok {
+						for k, v := range e {
+							if s, ok := v.(string); ok {
+								env[k] = s
+							}
+						}
+					}
+				} else {
+					if u, ok := bodyMap["url"].(string); ok {
+						mcpURL = u
+					}
+					if h, ok := bodyMap["headers"].(map[string]any); ok {
+						headers = h
+					}
 				}
 			}
 		}
 
-		servers = append(servers, map[string]any{
+		serverEntry := map[string]any{
 			"server_name":    item.Name,
 			"transport_type": transportType,
 			"mcp_url":        mcpURL,
 			"headers":        headers,
 			"tools":          tools,
-		})
+		}
+		if command != "" {
+			serverEntry["command"] = command
+			serverEntry["args"] = args
+			serverEntry["env"] = env
+		}
+		servers = append(servers, serverEntry)
 	}
 
 	logger.Infof("[Agent] 加载用户 MCP 服务: user_id=%d, count=%d", userID, len(servers))

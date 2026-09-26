@@ -362,6 +362,7 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   logger.info('应用即将退出')
+  void closeAllMcpConnections()
 })
 
 // ==================== 开发者工具 ====================
@@ -946,6 +947,279 @@ ipcMain.handle('fetch-mcp-resources', async (_event, params: {
   } finally {
     if (timeoutId) clearTimeout(timeoutId)
   }
+})
+
+// ==================== 执行 MCP 工具 ====================
+
+// ==================== MCP 连接池 ====================
+
+/** 单个 MCP 连接的池条目 */
+interface McpPoolEntry {
+  key: string
+  client: any
+  transport: any
+  lastUsed: number
+}
+
+/** MCP 连接池：key = server_name（无则用 transport 特征串），复用避免重复 spawn stdio 进程 */
+const mcpConnectionPool = new Map<string, McpPoolEntry>()
+
+/** 连接空闲回收阈值：超过该时长未使用则自动关闭（ms） */
+const MCP_IDLE_TIMEOUT_MS = 5 * 60 * 1000
+
+/** 空闲回收扫描间隔（ms） */
+const MCP_IDLE_REAP_INTERVAL_MS = 60 * 1000
+
+/** 构建连接池 key：优先 server_name，回退到传输特征串 */
+function buildMcpPoolKey(params: {
+  type?: string
+  server_name?: string
+  command?: string
+  args?: string[] | string
+  url?: string
+}): string {
+  if (params.server_name) {
+    return `mcp:${params.server_name}`
+  }
+  const rawType = params.type || 'streamable_http'
+  const sdkType = rawType === 'streamable_http' ? 'streamablehttp' : rawType
+  if (sdkType === 'stdio') {
+    return `stdio:${params.command || ''}:${JSON.stringify(params.args || [])}`
+  }
+  return `${sdkType}:${params.url || ''}`
+}
+
+/** 创建 MCP Transport（stdio / sse / streamable-http） */
+async function createMcpTransport(params: {
+  type?: string
+  command?: string
+  args?: string[] | string
+  env?: Record<string, string>
+  url?: string
+  headers?: Record<string, string> | string
+}): Promise<any> {
+  const rawType = params.type || 'streamable_http'
+  const sdkType = rawType === 'streamable_http' ? 'streamablehttp' : rawType
+
+  if (sdkType === 'stdio') {
+    const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js')
+    const args = Array.isArray(params.args)
+      ? params.args
+      : params.args
+        ? params.args.trim().split(/\s+/)
+        : []
+    const env: Record<string, string> = {}
+    if (params.env && typeof params.env === 'object') {
+      Object.assign(env, params.env)
+    }
+    if (!params.command) {
+      throw new Error('stdio MCP 缺少 command 配置')
+    }
+    return new StdioClientTransport({
+      command: params.command,
+      args,
+      env: Object.keys(env).length > 0 ? env : undefined,
+    })
+  }
+
+  const parseHeaders = (): Record<string, string> => {
+    const headers: Record<string, string> = {}
+    if (params.headers) {
+      if (typeof params.headers === 'object') {
+        Object.assign(headers, params.headers)
+      } else {
+        params.headers.split('\n').forEach(line => {
+          const trimmed = line.trim()
+          if (trimmed) {
+            const colonIdx = trimmed.indexOf(':')
+            if (colonIdx > 0) {
+              headers[trimmed.substring(0, colonIdx).trim()] = trimmed.substring(colonIdx + 1).trim()
+            }
+          }
+        })
+      }
+    }
+    return headers
+  }
+
+  if (sdkType === 'sse') {
+    const { SSEClientTransport } = await import('@modelcontextprotocol/sdk/client/sse.js')
+    const headers = parseHeaders()
+    return new SSEClientTransport(new URL(params.url || ''), {
+      eventSourceInit: { fetch: (url: string | URL, init?: RequestInit) => fetch(url, { ...init, headers: { ...headers } }) }
+    })
+  }
+
+  if (sdkType === 'streamablehttp') {
+    const { StreamableHTTPClientTransport } = await import('@modelcontextprotocol/sdk/client/streamableHttp.js')
+    const headers = parseHeaders()
+    return new StreamableHTTPClientTransport(new URL(params.url || ''), {
+      requestInit: Object.keys(headers).length > 0 ? { headers } : undefined,
+    })
+  }
+
+  throw new Error(`不支持的连接类型: ${sdkType}`)
+}
+
+/** 关闭并移除指定 key 的连接 */
+async function closeMcpConnection(key: string): Promise<void> {
+  const entry = mcpConnectionPool.get(key)
+  if (!entry) return
+  mcpConnectionPool.delete(key)
+  try {
+    await entry.client.close()
+  } catch { /* ignore */ }
+  logger.info(`[MCP] 连接已关闭: ${key}`)
+}
+
+/** 关闭池内全部连接（应用退出 / 显式清理） */
+async function closeAllMcpConnections(): Promise<void> {
+  const keys = [...mcpConnectionPool.keys()]
+  await Promise.all(keys.map(k => closeMcpConnection(k)))
+}
+
+/** 空闲回收：扫描并关闭超时未用的连接 */
+function reapIdleMcpConnections(): void {
+  const now = Date.now()
+  for (const [key, entry] of mcpConnectionPool.entries()) {
+    if (now - entry.lastUsed > MCP_IDLE_TIMEOUT_MS) {
+      logger.info(`[MCP] 空闲回收连接: ${key}`)
+      void closeMcpConnection(key)
+    }
+  }
+}
+
+// 定时扫描空闲连接
+setInterval(reapIdleMcpConnections, MCP_IDLE_REAP_INTERVAL_MS)
+
+/**
+ * 连接 MCP Server 并调用指定工具（callTool）。
+ * 支持 stdio / sse / streamable-http 三种协议。
+ * stdio 需传 command/args/env；远程类型传 url/headers。
+ * 复用连接池：同一 server 首次连接后缓存，后续步骤复用（避免重复 spawn stdio 进程）。
+ */
+ipcMain.handle('call-mcp-tool', async (_event, params: {
+  type?: string
+  server_name?: string
+  command?: string
+  args?: string[] | string
+  env?: Record<string, string>
+  url?: string
+  headers?: Record<string, string> | string
+  tool: string
+  arguments?: any
+  timeout?: number
+}) => {
+  const key = buildMcpPoolKey(params)
+  logger.info(
+    `[MCP] 调用工具: key=${key} | type=${params.type || ''} | tool=${params.tool} | command=${params.command || ''} | url=${params.url || ''} | args=${JSON.stringify(params.args) || ''} | env=${JSON.stringify(params.env) || ''} | headers=${typeof params.headers === 'string' ? params.headers : JSON.stringify(params.headers) || ''} | arguments=${JSON.stringify(params.arguments) || ''}`
+  )
+
+  const timeout = params.timeout || 30000
+  const timer = new Promise<never>((_, reject) => {
+    setTimeout(() => reject(new Error(`MCP 工具执行超时 (${timeout}s)`)), timeout)
+  })
+
+  try {
+    // 命中连接池 → 复用；未命中 → 建立新连接
+    let entry = mcpConnectionPool.get(key)
+    let isNew = false
+    if (!entry) {
+      const { Client } = await import('@modelcontextprotocol/sdk/client/index.js')
+      const transport = await createMcpTransport(params)
+      const client = new Client(
+        { name: 'guineapig-client', version: '1.0.0' },
+        { capabilities: {} }
+      )
+      await client.connect(transport)
+      entry = { key, client, transport, lastUsed: Date.now() }
+      mcpConnectionPool.set(key, entry)
+      isNew = true
+      logger.info(`[MCP] 建立新连接: ${key} (${params.type || 'unknown'})`)
+    }
+    entry.lastUsed = Date.now()
+
+    const result: any = await Promise.race([
+      entry.client.callTool({
+        name: params.tool,
+        arguments: params.arguments || {},
+      }),
+      timer,
+    ])
+
+    logger.info(
+      `[MCP] 工具执行${isNew ? '（新连接）' : '（复用连接）'}成功: key=${key} tool=${params.tool} | isError=${!!result.isError}`
+    )
+    return {
+      result,
+      isError: !!result.isError,
+      content: result.content || [],
+    }
+  } catch (err: any) {
+    // 调用失败 → 断开该连接，下次调用重建（避免复用坏连接）
+    if (mcpConnectionPool.has(key)) {
+      logger.warn(`[MCP] 调用失败移除连接: ${key} | ${err.message}`)
+      void closeMcpConnection(key)
+    }
+    logger.error(`[MCP] 工具执行失败: tool=${params.tool} | ${err.message}`)
+    throw new Error(`MCP 工具执行失败: ${err.message}`)
+  }
+})
+
+/**
+ * 预热 MCP 连接（仅建立连接，不调用工具）。
+ * 在 agent 下发 MCP 步骤时由 renderer 自动触发，提前 spawn stdio 进程，
+ * 避免用户点击执行时才等待首次启动。
+ */
+ipcMain.handle('prepare-mcp-connection', async (_event, params: {
+  type?: string
+  server_name?: string
+  command?: string
+  args?: string[] | string
+  env?: Record<string, string>
+  url?: string
+  headers?: Record<string, string> | string
+}) => {
+  const key = buildMcpPoolKey(params)
+  logger.info(
+    `[MCP] 预热连接: key=${key} | type=${params.type || ''} | command=${params.command || ''} | url=${params.url || ''}`
+  )
+
+  try {
+    let entry = mcpConnectionPool.get(key)
+    let reused = true
+    if (!entry) {
+      const { Client } = await import('@modelcontextprotocol/sdk/client/index.js')
+      const transport = await createMcpTransport(params)
+      const client = new Client(
+        { name: 'guineapig-client', version: '1.0.0' },
+        { capabilities: {} }
+      )
+      await client.connect(transport)
+      entry = { key, client, transport, lastUsed: Date.now() }
+      mcpConnectionPool.set(key, entry)
+      reused = false
+      logger.info(`[MCP] 预热建立新连接: ${key} (${params.type || 'unknown'})`)
+    }
+    entry.lastUsed = Date.now()
+    return { connected: true, key, reused }
+  } catch (err: any) {
+    if (mcpConnectionPool.has(key)) {
+      void closeMcpConnection(key)
+    }
+    logger.error(`[MCP] 预热连接失败: key=${key} | ${err.message}`)
+    throw new Error(`MCP 连接预热失败: ${err.message}`)
+  }
+})
+
+/**
+ * 关闭全部 MCP 连接（DAG 执行完成后由 renderer 调用，释放 stdio 子进程）
+ */
+ipcMain.handle('close-mcp-connections', async () => {
+  const count = mcpConnectionPool.size
+  await closeAllMcpConnections()
+  logger.info(`[MCP] 已关闭全部连接: ${count} 个`)
+  return { closed: count }
 })
 
 // ==================== 打开外部链接 ====================

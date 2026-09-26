@@ -103,6 +103,15 @@ class MCPToolSchema(BaseModel):
         "", description="MCP server URL（仅 sse/streamable_http 使用）"
     )
     headers: dict = Field(default_factory=dict, description="MCP 请求头")
+    command: str = Field(
+        "", description="stdio 启动命令（仅 stdio 使用，client 端执行）"
+    )
+    args: list[str] = Field(
+        default_factory=list, description="stdio 启动命令参数（client 端执行）"
+    )
+    env: dict = Field(
+        default_factory=dict, description="stdio 启动环境变量（client 端执行）"
+    )
     tools: list[dict] = Field(
         default_factory=list, description="工具列表，每项含 name/description"
     )
@@ -176,23 +185,25 @@ async def _run_intent_pipeline(
             "pipeline_output_tokens": 0,
         }
 
-    # 扫描能力清单
+    # 扫描能力清单（轻量清单，零网络）
     mcp_tool_infos = [
         MCPToolInfo(
             server_name=s.server_name,
             transport_type=s.transport_type,
             mcp_url=s.mcp_url,
             headers=s.headers,
+            command=s.command,
+            args=s.args,
+            env=s.env,
             tools=s.tools,
         )
         for s in request.mcp_servers
     ]
-    inventory = await CapabilityRegistry.scan(
-        mcp_servers=mcp_tool_infos,
-        skills=request.skills,
-        rag_context=request.rag_context,
+    logger.info(
+        f"[Agent] 收到 mcp_servers: user_id={request.user_id}, "
+        f"count={len(mcp_tool_infos)}, "
+        f"servers={[m.server_name for m in mcp_tool_infos]}"
     )
-    capabilities_formatted = CapabilityRegistry.format_for_llm(inventory)
 
     candidates: list = []
     deep_analysis = None
@@ -201,46 +212,33 @@ async def _run_intent_pipeline(
     pipeline_input_tokens = 0
     pipeline_output_tokens = 0
 
-    # Phase 1: 关键词扫描（仅 simple）
-    if quick_result == QuickFilterResult.SIMPLE:
-        candidates = IntentScanner.scan(message)
-
-    # Phase 2: LLM 深度分析
-    needs_deep_analysis = (
-        quick_result == QuickFilterResult.COMPLEX
-        or (quick_result == QuickFilterResult.SIMPLE and not candidates)
-        or (candidates and candidates[0].confidence < 0.5)
+    inventory = await CapabilityRegistry.scan(
+        mcp_servers=mcp_tool_infos,
+        skills=request.skills,
+        rag_context=request.rag_context,
     )
-    if needs_deep_analysis:
-        logger.info(
-            f"[Agent] 触发 Phase 2 LLM 深度分析: "
-            f"complex={quick_result == QuickFilterResult.COMPLEX}, "
-            f"candidates={len(candidates)}"
+    capabilities_formatted = CapabilityRegistry.format_for_llm(inventory)
+
+    # ═══════════ Phase 1 + Phase 2: LLM 深度分析 ═══════════
+    deep_analysis = await _run_llm_deep_analysis(
+        request=request,
+        message=message,
+        quick_result=quick_result,
+        inventory=inventory,
+        capabilities_formatted=capabilities_formatted,
+        trace_id=trace_id,
+    )
+    candidates = deep_analysis.get("candidates", []) if deep_analysis else []
+    deep_analysis = deep_analysis.get("deep_analysis") if deep_analysis else None
+    pipeline_input_tokens += _llm_analysis_tokens(
+        message, request, capabilities_formatted, deep_analysis
+    )
+
+    # 估算 DeepAnalyzer 输出 token
+    if deep_analysis:
+        pipeline_output_tokens += _estimate_tokens(
+            json.dumps(deep_analysis.model_dump())
         )
-        # 同步 LLM 调用放入线程池，避免阻塞事件循环
-        deep_analysis = await asyncio.to_thread(
-            DeepAnalyzer.analyze,
-            user_message=message,
-            capability_inventory=inventory,
-            conversation_history=request.conversation_history,
-            capabilities_formatted=capabilities_formatted,
-            trace_id=trace_id,
-        )
-        # 估算 DeepAnalyzer LLM 调用 token
-        analysis_input = capabilities_formatted + " " + message
-        if request.conversation_history:
-            for msg in request.conversation_history[-8:]:
-                c = msg.get("content", "")
-                if isinstance(c, list):
-                    c = " ".join(p.get("text", "") for p in c if isinstance(p, dict))
-                analysis_input += " " + str(c)
-        pipeline_input_tokens += (
-            _estimate_tokens(analysis_input) + 200
-        )  # + system prompt
-        if deep_analysis:
-            pipeline_output_tokens += _estimate_tokens(
-                json.dumps(deep_analysis.model_dump())
-            )
 
     # Phase 3: 综合判定
     decision = IntentDecision.decide(
@@ -271,6 +269,15 @@ async def _run_intent_pipeline(
         pipeline_input_tokens += _estimate_tokens(dag_input) + 250  # + system prompt
         if dag:
             pipeline_output_tokens += _estimate_tokens(json.dumps(dag.model_dump()))
+            step_summary = [
+                f"{s.step_id}:{s.capability}/{s.action}" for s in dag.steps
+            ]
+            logger.info(
+                f"[Agent] DAG 生成成功: {len(dag.steps)} 个步骤: "
+                f"{', '.join(step_summary)}"
+            )
+        else:
+            logger.warning("[Agent] DAG 生成为空")
 
     return {
         "quick_result": quick_result,
@@ -284,6 +291,85 @@ async def _run_intent_pipeline(
         "pipeline_input_tokens": pipeline_input_tokens,
         "pipeline_output_tokens": pipeline_output_tokens,
     }
+
+
+async def _run_llm_deep_analysis(
+    request: AgentChatRequest,
+    message: str,
+    quick_result: QuickFilterResult,
+    inventory,
+    capabilities_formatted: str,
+    trace_id: str | None,
+) -> dict:
+    """
+    执行 Phase 1 + Phase 2 LLM 深度分析（llm 模式）。
+
+    Returns:
+        {"candidates": [...], "deep_analysis": DeepAnalysisResult | None}
+    """
+    candidates: list = []
+
+    # Phase 1: 关键词扫描（仅 simple）
+    if quick_result == QuickFilterResult.SIMPLE:
+        candidates = IntentScanner.scan(message)
+        logger.info(
+            f"[Agent] Phase 1 扫描候选: "
+            f"{[f'{c.intent_type}:{c.confidence}' for c in candidates] or '无匹配'}"
+        )
+
+    # Phase 2: LLM 深度分析
+    needs_deep_analysis = (
+        quick_result == QuickFilterResult.COMPLEX
+        or (quick_result == QuickFilterResult.SIMPLE and not candidates)
+        or (candidates and candidates[0].confidence < 0.5)
+    )
+    deep_analysis = None
+    if needs_deep_analysis:
+        logger.info(
+            f"[Agent] 触发 Phase 2 LLM 深度分析: "
+            f"complex={quick_result == QuickFilterResult.COMPLEX}, "
+            f"candidates={len(candidates)}"
+        )
+        # 同步 LLM 调用放入线程池，避免阻塞事件循环
+        deep_analysis = await asyncio.to_thread(
+            DeepAnalyzer.analyze,
+            user_message=message,
+            capability_inventory=inventory,
+            conversation_history=request.conversation_history,
+            capabilities_formatted=capabilities_formatted,
+            trace_id=trace_id,
+        )
+        if deep_analysis:
+            logger.info(
+                f"[Agent] Phase 2 深度分析: "
+                f"intent={deep_analysis.intent_type}, "
+                f"complexity={deep_analysis.complexity}, "
+                f"steps={deep_analysis.estimated_steps}, "
+                f"feasible={deep_analysis.feasible}, "
+                f"confidence={deep_analysis.confidence}"
+            )
+        else:
+            logger.warning("[Agent] Phase 2 深度分析失败/未返回结果")
+    return {"candidates": candidates, "deep_analysis": deep_analysis}
+
+
+def _llm_analysis_tokens(
+    message: str,
+    request: AgentChatRequest,
+    capabilities_formatted: str,
+    deep_analysis,
+) -> int:
+    """估算一次 DeepAnalyzer LLM 调用的输入 token。"""
+    if deep_analysis is None:
+        return 0
+    analysis_input = capabilities_formatted + " " + message
+    if request.conversation_history:
+        for msg in request.conversation_history[-8:]:
+            c = msg.get("content", "")
+            if isinstance(c, list):
+                c = " ".join(p.get("text", "") for p in c if isinstance(p, dict))
+            analysis_input += " " + str(c)
+    return _estimate_tokens(analysis_input) + 200  # + system prompt
 
 
 def _build_phase_response(
@@ -614,6 +700,10 @@ async def agent_chat(request: AgentChatRequest):
 
         pipeline_result = await _run_intent_pipeline(request)
         response_data = _build_phase_response(pipeline_result)
+        logger.info(
+            f"[Agent] POST /chat 响应: action={response_data.get('action')}, "
+            f"quick={response_data.get('quick_filter')}"
+        )
 
         await report_chat_metrics(
             user_id=request.user_id,
@@ -711,6 +801,12 @@ async def agent_chat_stream(request: AgentChatRequest):
                             ),
                         }
                     )
+
+                logger.info(
+                    f"[Agent-Stream] Pipeline 完成: quick={quick_result.value}, "
+                    f"action={decision.action if decision else 'n/a'}, "
+                    f"dag_steps={len(dag.steps) if dag else 0}"
+                )
 
                 # Trivial → SSE LLM 流式回复（跳过 DAG 执行）
                 if quick_result == QuickFilterResult.TRIVIAL:

@@ -2,8 +2,10 @@
 能力注册表 — 实时扫描当前可用能力，格式化输出给 LLM。
 
 扫描来源：
-- MCP: 从调用方传入的 MCP 服务列表（backend 从 MySQL 加载后传入）；
-        对非 stdio 的服务主动调用 list_tools() 获取完整 inputSchema
+- MCP: 从调用方传入的 MCP 服务列表（backend 从数据库读取完整快照后传入，
+        含 name / description / input_schema）。默认不主动调用 list_tools() 刷新 ——
+        MCP tools 由 client 注册时同步到数据库，一般不会频繁变化。
+        如需强制刷新可配置 MCP_TOOLS_REFRESH=true。
 - CLI: 固定可用（aiagent 认定 CLI 能力存在）
 - Skill: 从调用方传入的 skills 列表
 - Web Search: 依赖 SEARXNG_URL 配置
@@ -11,8 +13,6 @@
 - Memory: 总是可用
 - LLM: 总是可用
 """
-
-import asyncio
 
 from datetime import datetime, timezone
 
@@ -34,23 +34,24 @@ _MCP_LIST_TOOLS_TIMEOUT = 10
 class CapabilityRegistry:
     """能力注册表 — 每次调用时实时扫描当前可用能力。"""
 
+    # ── 轻量清单（零网络，默认路径） ──
+
     @classmethod
-    async def scan(
+    async def scan_light(
         cls,
         mcp_servers: list[MCPToolInfo] | None = None,
         skills: list[dict] | None = None,
         rag_context: dict | None = None,
     ) -> CapabilityInventory:
         """
-        扫描并返回当前完整能力清单。
+        轻量能力扫描 — 零网络调用（默认路径）。
 
-        对非 stdio MCP 服务器主动调用 list_tools() 获取完整
-        inputSchema（参数名称、类型、描述、必填），
-        让 LLM 能理解每个工具的正确调用方式。
+        直接使用调用方传入的 tools（含完整 input_schema，由 backend 从数据库同步），
+        不调用 list_tools()。MCP tools 接口一般不常变，数据库快照足够。
 
         Args:
             mcp_servers: 已注册的 MCP 服务列表（由 backend 传入）
-            skills: 用户已开启的 Skill 列表（由 backend 传入）
+            skills: 用户已开启的 Skill 列表
             rag_context: RAG 上下文配置（不为空表示 RAG 可用）
 
         Returns:
@@ -58,7 +59,7 @@ class CapabilityRegistry:
         """
         capabilities: list[CapabilityInfo] = []
 
-        # 1. MCP — 从传入列表扫描 + 主动拉取完整 schema
+        # 1. MCP — 从传入列表注册（直接用传入的 tools，零网络）
         if mcp_servers:
             for srv in mcp_servers:
                 loc = (
@@ -66,33 +67,7 @@ class CapabilityRegistry:
                     if srv.transport_type == "stdio"
                     else ExecutionLocation.SERVER
                 )
-                tools = list(srv.tools)  # 默认使用传入的工具列表
-
-                # 非 stdio 类型且有 URL → 主动调用 list_tools()
-                if srv.transport_type != "stdio" and srv.mcp_url:
-                    try:
-                        full_tools = await asyncio.wait_for(
-                            cls._fetch_mcp_tools(srv),
-                            timeout=_MCP_LIST_TOOLS_TIMEOUT,
-                        )
-                        if full_tools:
-                            logger.info(
-                                f"[CapabilityRegistry] {srv.server_name} "
-                                f"list_tools() 获取 {len(full_tools)} 个工具（含 inputSchema）"
-                            )
-                            tools = full_tools
-                    except asyncio.TimeoutError:
-                        logger.warning(
-                            f"[CapabilityRegistry] {srv.server_name} "
-                            f"list_tools() 超时（{_MCP_LIST_TOOLS_TIMEOUT}s），"
-                            "使用已缓存工具信息"
-                        )
-                    except Exception as e:
-                        logger.warning(
-                            f"[CapabilityRegistry] {srv.server_name} "
-                            f"list_tools() 失败: {e}，使用已缓存工具信息"
-                        )
-
+                tools = await cls._maybe_refresh_tools(srv)
                 capabilities.append(
                     CapabilityInfo(
                         type=CapabilityType.MCP,
@@ -103,7 +78,114 @@ class CapabilityRegistry:
                     )
                 )
 
-        # 2. CLI — 始终可用
+                # 日志：每个 MCP server 的工具加载明细
+                tool_names = []
+                with_schema = 0
+                for t in tools:
+                    if isinstance(t, dict):
+                        tname = t.get("name", "")
+                        if tname:
+                            tool_names.append(tname)
+                        if t.get("input_schema"):
+                            with_schema += 1
+                    else:
+                        tool_names.append(str(t))
+                logger.info(
+                    f"[CapabilityRegistry] MCP server '{srv.server_name}' "
+                    f"加载 {len(tools)} 个工具, "
+                    f"{with_schema}/{len(tools)} 含 input_schema, "
+                    f"transport={srv.transport_type}, loc={loc.value}"
+                )
+                logger.debug(
+                    f"[CapabilityRegistry] MCP server '{srv.server_name}' "
+                    f"tools: {tool_names}"
+                )
+
+        capabilities.extend(cls._build_local_capabilities(skills, rag_context))
+
+        inventory = CapabilityInventory(
+            capabilities=capabilities,
+            scanned_at=datetime.now(timezone.utc).isoformat(),
+        )
+
+        cap_summary = [
+            f"{c.name}({len(c.tools)} tools)"
+            if c.tools else c.name
+            for c in capabilities
+        ]
+        logger.info(
+            f"[CapabilityRegistry] 扫描完成: {len(capabilities)} 个能力: "
+            f"{', '.join(cap_summary)}"
+        )
+        return inventory
+
+    # ── 富化清单（默认纯透传数据库快照） ──
+
+    @classmethod
+    async def enrich_mcp(
+        cls,
+        mcp_servers: list[MCPToolInfo] | None = None,
+    ) -> list[MCPToolInfo]:
+        """
+        富化 MCP 服务器工具信息 — 默认直接透传 backend 传入的数据库快照。
+
+        不主动调用 list_tools()：MCP tools 由 client 注册时同步到数据库
+        （含完整 input_schema），接口一般不常变。仅当 MCP_TOOLS_REFRESH=true 时
+        才对 remote 类型主动刷新。
+
+        Args:
+            mcp_servers: 已注册的 MCP 服务列表（由 backend 传入）
+
+        Returns:
+            富化后的 MCP 服务列表（原对象拷贝）
+        """
+        if not mcp_servers:
+            return []
+
+        enriched: list[MCPToolInfo] = []
+        for srv in mcp_servers:
+            new_srv = srv.model_copy(deep=True)
+            # 默认不刷新：保留 backend 传入的数据库快照 tools
+            new_srv.tools = await cls._maybe_refresh_tools(srv)
+            enriched.append(new_srv)
+        return enriched
+
+    @classmethod
+    async def _maybe_refresh_tools(cls, srv: MCPToolInfo) -> list[dict]:
+        """
+        按 MCP_TOOLS_REFRESH 配置决定是否刷新 tools。
+
+        默认（False）直接返回传入快照；仅 True 时对 remote 类型调用 list_tools()。
+        刷新失败时降级使用传入快照。
+        """
+        if settings.MCP_TOOLS_REFRESH and srv.transport_type != "stdio" and srv.mcp_url:
+            try:
+                full_tools = await cls._fetch_mcp_tools(srv)
+                if full_tools:
+                    logger.info(
+                        f"[CapabilityRegistry] {srv.server_name} "
+                        f"list_tools() 刷新 {len(full_tools)} 个工具（含 input_schema）"
+                    )
+                    return full_tools
+            except Exception as e:
+                logger.warning(
+                    f"[CapabilityRegistry] {srv.server_name} list_tools() 刷新失败: {e}，"
+                    "使用 backend 传入的数据库快照 tools"
+                )
+        return list(srv.tools)
+
+    # ── 本地能力组合（零网络） ──
+
+    @classmethod
+    def _build_local_capabilities(
+        cls,
+        skills: list[dict] | None = None,
+        rag_context: dict | None = None,
+    ) -> list[CapabilityInfo]:
+        """组装纯本地能力：CLI / Skill / WebSearch / RAG / Memory / LLM。"""
+        capabilities: list[CapabilityInfo] = []
+
+        # CLI — 始终可用
         capabilities.append(
             CapabilityInfo(
                 type=CapabilityType.CLI,
@@ -113,7 +195,7 @@ class CapabilityRegistry:
             )
         )
 
-        # 3. Skill — 从传入列表扫描
+        # Skill — 从传入列表扫描
         if skills:
             for sk in skills:
                 sk_name = sk.get("name", "") if isinstance(sk, dict) else getattr(sk, "name", "")
@@ -127,7 +209,7 @@ class CapabilityRegistry:
                         )
                     )
 
-        # 4. Web Search — 依赖 SearXNG 配置
+        # Web Search — 依赖 SearXNG 配置
         web_search_available = bool(settings.SEARXNG_URL)
         if web_search_available:
             capabilities.append(
@@ -139,7 +221,7 @@ class CapabilityRegistry:
                 )
             )
 
-        # 5. RAG — 依赖 Milvus 配置 + 传入的 rag_context
+        # RAG — 依赖 Milvus 配置 + 传入的 rag_context
         rag_available = bool(settings.MILVUS_HOST) and rag_context is not None
         if rag_available:
             kb_list = rag_context.get("rag_names", []) if isinstance(rag_context, dict) else []
@@ -153,7 +235,7 @@ class CapabilityRegistry:
                 )
             )
 
-        # 6. Memory — 始终可用
+        # Memory — 始终可用
         capabilities.append(
             CapabilityInfo(
                 type=CapabilityType.MEMORY,
@@ -163,7 +245,7 @@ class CapabilityRegistry:
             )
         )
 
-        # 7. LLM — 始终可用
+        # LLM — 始终可用
         capabilities.append(
             CapabilityInfo(
                 type=CapabilityType.LLM_CHAT,
@@ -173,13 +255,26 @@ class CapabilityRegistry:
             )
         )
 
-        inventory = CapabilityInventory(
-            capabilities=capabilities,
-            scanned_at=datetime.now(timezone.utc).isoformat(),
-        )
+        return capabilities
 
-        logger.debug(f"[CapabilityRegistry] 扫描完成: {len(capabilities)} 个能力")
-        return inventory
+    @classmethod
+    async def scan(
+        cls,
+        mcp_servers: list[MCPToolInfo] | None = None,
+        skills: list[dict] | None = None,
+        rag_context: dict | None = None,
+    ) -> CapabilityInventory:
+        """
+        完整能力扫描 — 兼容原有调用方。
+
+        默认直接用 backend 传入的数据库快照 tools（含 input_schema），
+        不主动调 list_tools()。仅 MCP_TOOLS_REFRESH=true 时刷新。
+        """
+        return await cls.scan_light(
+            mcp_servers=mcp_servers,
+            skills=skills,
+            rag_context=rag_context,
+        )
 
     @classmethod
     async def _fetch_mcp_tools(cls, srv: MCPToolInfo) -> list[dict]:
@@ -251,6 +346,10 @@ class CapabilityRegistry:
         Returns:
             格式化字符串，可直接注入 LLM system prompt
         """
+        logger.info(
+            f"[CapabilityRegistry] format_for_llm 开始: "
+            f"{len(inventory.capabilities)} 个能力"
+        )
         lines = ["## 当前你可用的能力"]
         for cap in inventory.capabilities:
             if not cap.enabled:
@@ -285,7 +384,12 @@ class CapabilityRegistry:
         if len(lines) == 1:
             lines.append("  (当前无可用能力)")
 
-        return "\n".join(lines)
+        result_text = "\n".join(lines)
+        logger.info(
+            f"[CapabilityRegistry] format_for_llm 完成: "
+            f"{len(result_text)} 字符, {len(lines) - 1} 个能力"
+        )
+        return result_text
 
     @classmethod
     def _format_params(cls, input_schema: dict) -> str:
