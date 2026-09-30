@@ -34,6 +34,7 @@ class PipelineContext:
     user_id: Optional[int] = None
     web_search_enabled: bool = False
     rag_context: Optional[dict] = None
+    is_small_model: bool = False
 
     # Processor 输出状态
     full_content: str = ""
@@ -49,6 +50,19 @@ class PipelineContext:
 
     def has_error(self) -> bool:
         return self.error is not None
+
+
+def _append_to_user_message(messages: list[dict], content: str) -> bool:
+    """将内容追加到最后一条 user 消息末尾（小模型模式）。
+
+    小模型对 system prompt 多块堆叠的跟随能力弱，把检索内容拼到当前
+    问题所在的 user 消息上，落在模型注意力最集中的位置。
+    """
+    for msg in reversed(messages):
+        if msg.get("role") == "user":
+            msg["content"] += content
+            return True
+    return False
 
 
 class BaseProcessor:
@@ -153,6 +167,13 @@ class NetworkSearchProcessor(BaseProcessor):
             "如果不相关或为空，忽略它们并正常回答。"
         )
 
+        if ctx.is_small_model:
+            # 小模型：注入到最后一条 user 消息，避免堆叠到 system prompt
+            if _append_to_user_message(ctx.messages, search_block):
+                logger.info("[Pipeline] 小模型：联网搜索结果已注入 user 消息")
+                return
+            logger.info("[Pipeline] 小模型但无 user 消息，回退到 system prompt")
+
         # 注入到已有的 system message 中
         for msg in ctx.messages:
             if msg.get("role") == "system":
@@ -171,6 +192,20 @@ class DefaultSkillInjector(BaseProcessor):
         if not ctx._skill_context_loaded:
             from app.services.skill_load_service import inject_skill_system_prompt
 
+            if ctx.is_small_model:
+                # 小模型：跳过冗长的英文 Command Rules，用一行简短中文提示，
+                # 避免撑大 system prompt 导致小模型跟不住
+                for msg in ctx.messages:
+                    if msg.get("role") == "system":
+                        msg["content"] += (
+                            "\n\n回答用户问题即可，无需执行命令。保持简洁。"
+                        )
+                        return
+                ctx.messages.insert(
+                    0, {"role": "system", "content": "回答用户问题即可，无需执行命令。保持简洁。"}
+                )
+                return
+
             ctx.messages = inject_skill_system_prompt(ctx.messages, "")
 
 
@@ -184,6 +219,11 @@ class RAGRetrievalProcessor(BaseProcessor):
     async def process(self, ctx: PipelineContext) -> None:
         rag_ctx = ctx.rag_context
         if not rag_ctx:
+            return
+
+        # 小模型只保留网络搜索 + 单轮请求，跳过 RAG 记忆注入
+        if ctx.is_small_model:
+            logger.info("[Pipeline] 小模型：跳过 RAG 记忆注入")
             return
 
         user_message = ""
@@ -218,6 +258,13 @@ class RAGRetrievalProcessor(BaseProcessor):
             if not rag_content:
                 logger.info("[Pipeline] 无 RAG 知识库检索结果")
                 return
+
+            if ctx.is_small_model:
+                # 小模型：注入到最后一条 user 消息，避免堆叠到 system prompt
+                if _append_to_user_message(ctx.messages, rag_content):
+                    logger.info("[Pipeline] 小模型：RAG 检索结果已注入 user 消息")
+                    return
+                logger.info("[Pipeline] 小模型但无 user 消息，回退到 system prompt")
 
             # 追加到已有 system message
             for msg in ctx.messages:

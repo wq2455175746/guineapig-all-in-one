@@ -795,9 +795,12 @@ async function fetchModelOptions() {
     const res = await fetch(`${API_BASE_URL}/api/v1/aimodel/options-by-type?user_id=${userId}&model_type=LLM`)
     const data = await res.json()
     if (data.code === 0) {
-      modelOptions.value = data.result || []
+      modelOptions.value = (data.result || []).map((m: ModelOption) => ({
+        ...m,
+        id: Number(m.id),
+      }))
       if (modelOptions.value.length > 0) {
-        selectedModel.value = Number(modelOptions.value[0].id)
+        selectedModel.value = modelOptions.value[0].id
       }
     }
   } catch (err) {

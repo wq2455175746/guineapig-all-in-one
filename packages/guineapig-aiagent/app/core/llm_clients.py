@@ -47,7 +47,22 @@ def get_async_llm_client(
     return _get_client(is_async=True, api_key=api_key, base_url=base_url, timeout=timeout)
 
 
+def _normalize_llm_base_url(base_url: str) -> str:
+    """
+    确保 base_url 指向 OpenAI 兼容的 /v1 根路径。
+
+    OpenAI 客户端会把 base_url 与 "/chat/completions" 拼接，vLLM 等仅暴露
+    /v1/chat/completions 的服务若缺少 /v1 前缀会返回 404；DeepSeek 同时支持
+    带/不带 /v1，补齐后两者均可正常工作。
+    """
+    url = base_url.rstrip("/")
+    if "/v1" in url:
+        return url
+    return url + "/v1"
+
+
 def _get_client(is_async: bool, api_key: str, base_url: str, timeout: float):
+    base_url = _normalize_llm_base_url(base_url)
     key = (is_async, api_key, base_url, timeout)
     with _cache_lock:
         client = _cache.get(key)

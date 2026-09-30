@@ -49,3 +49,4 @@ class LLMStreamRequest(BaseModel):
     session_id: Optional[str] = ""             # 会话 ID（格式: conv_{conversation_id}）
     web_search_enabled: bool = False           # 是否开启联网搜索
     rag_context: Optional[RagContext] = None   # RAG 知识库检索配置
+    is_small_model: bool = False               # 是否小模型：True 时搜索/RAG 注入 user 消息而非 system prompt

@@ -1,15 +1,20 @@
 package response
 
+import "encoding/json"
+
 type AiModelItem struct {
-	Id           int64  `json:"id,string"`
-	ModelCode    string `json:"model_code"`
-	ModelName    string `json:"model_name"`
-	ApiUrl       string `json:"api_url"`
-	ProviderCode string `json:"provider_code"`
-	ModelType    string `json:"model_type"`
-	ApiKey       string `json:"api_key"`
-	Status       int8   `json:"status"`
-	Established  int8   `json:"established"`
+	Id           int64           `json:"id,string"`
+	ModelCode    string          `json:"model_code"`
+	ModelName    string          `json:"model_name"`
+	ApiUrl       string          `json:"api_url"`
+	ProviderCode string          `json:"provider_code"`
+	ModelType    string          `json:"model_type"`
+	MaxTokens    int             `json:"max_tokens"`
+	IsSmallModel int8            `json:"is_small_model"`
+	ApiKey       string          `json:"api_key"`
+	Status       int8            `json:"status"`
+	Established  int8            `json:"established"`
+	ExtraParams  json.RawMessage `json:"extra_params,omitempty"`
 }
 
 type AiModelListResponse struct {

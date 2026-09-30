@@ -366,23 +366,24 @@ func (h *Hub) streamAssistantReply(ctx context.Context, client *ClientConnection
 	assistantMsgID := assistantMsg.Id
 	aiAgentConn.MessageID = assistantMsgID
 
-	// 3. 构建 LLM 上下文
-	llmMessages, err := buildLLMMessages(aiCtx, conversation)
-	if err != nil {
-		if uerr := updateMessageStatus(writeCtx, assistantMsgID, "error", fmt.Sprintf("构建上下文失败: %v", err)); uerr != nil {
-			logger.Errorf("[Hub] 构建上下文失败更新消息状态出错: message_id=%d, err=%v", assistantMsgID, uerr)
-		}
-		h.sendError(client, fmt.Sprintf("构建上下文失败: %v", err))
-		return
-	}
-
-	// 4. 加载模型配置
+	// 3. 加载模型配置
 	modelConfig, err := loadModelConfig(aiCtx, conversation.ModelId, client.UserID)
 	if err != nil {
 		if uerr := updateMessageStatus(writeCtx, assistantMsgID, "error", fmt.Sprintf("加载模型配置失败: %v", err)); uerr != nil {
 			logger.Errorf("[Hub] 加载模型配置失败更新消息状态出错: message_id=%d, err=%v", assistantMsgID, uerr)
 		}
 		h.sendError(client, fmt.Sprintf("加载模型配置失败: %v", err))
+		return
+	}
+
+	// 4. 构建 LLM 上下文（小模型只保留单轮用户消息）
+	singleTurn := modelConfig.IsSmallModel == 1
+	llmMessages, err := buildLLMMessages(aiCtx, conversation, singleTurn)
+	if err != nil {
+		if uerr := updateMessageStatus(writeCtx, assistantMsgID, "error", fmt.Sprintf("构建上下文失败: %v", err)); uerr != nil {
+			logger.Errorf("[Hub] 构建上下文失败更新消息状态出错: message_id=%d, err=%v", assistantMsgID, uerr)
+		}
+		h.sendError(client, fmt.Sprintf("构建上下文失败: %v", err))
 		return
 	}
 
@@ -398,9 +399,14 @@ func (h *Hub) streamAssistantReply(ctx context.Context, client *ClientConnection
 		}
 	}
 
-	ragContext, ragErr := resolveRagContextFromLatestMessage(aiCtx, convID, client.UserID)
-	if ragErr != nil {
-		logger.Warnf("[Hub] 解析 RAG 上下文失败: conversation_id=%d, user_id=%d, err=%v", convID, client.UserID, ragErr)
+	// 小模型只保留网络搜索 + 单轮请求，跳过 RAG 记忆注入
+	var ragContext *RagContext
+	if modelConfig.IsSmallModel != 1 {
+		var ragErr error
+		ragContext, ragErr = resolveRagContextFromLatestMessage(aiCtx, convID, client.UserID)
+		if ragErr != nil {
+			logger.Warnf("[Hub] 解析 RAG 上下文失败: conversation_id=%d, user_id=%d, err=%v", convID, client.UserID, ragErr)
+		}
 	}
 
 	var commands []response.CommandItem
@@ -500,6 +506,9 @@ func (h *Hub) proxyAiAgentStream(
 		"stream":      true,
 		"user_id":     userID,
 		"session_id":  fmt.Sprintf("conv_%d", conversationID),
+	}
+	if modelConfig.IsSmallModel == 1 {
+		reqMap["is_small_model"] = true
 	}
 	if len(skills) > 0 {
 		reqMap["skills"] = skills
@@ -686,21 +695,7 @@ func (h *Hub) handleCommandResult(client *ClientConnection, env *response.WSEnve
 		},
 	})
 
-	// 5. 构建 LLM 上下文（不含当前轮结果）
-	llmMessages, err := buildLLMMessages(aiCtx, conversation)
-	if err != nil {
-		if uerr := updateMessageStatus(writeCtx, assistantMsgID, "error", fmt.Sprintf("构建上下文失败: %v", err)); uerr != nil {
-			logger.Errorf("[Hub] 构建上下文失败更新消息状态出错: message_id=%d, err=%v", assistantMsgID, uerr)
-		}
-		h.sendError(client, fmt.Sprintf("构建上下文失败: %v", err))
-		return
-	}
-
-	// 6. 注入命令执行结果到 system message
-	round, _ := nextCommandRound(aiCtx, client.UserID, convID)
-	llmMessages = injectCommandResultsIntoMessages(llmMessages, resultsRaw, round, MaxCommandRounds)
-
-	// 7. 加载模型配置
+	// 5. 加载模型配置
 	modelConfig, err := loadModelConfig(aiCtx, conversation.ModelId, client.UserID)
 	if err != nil {
 		if uerr := updateMessageStatus(writeCtx, assistantMsgID, "error", fmt.Sprintf("加载模型配置失败: %v", err)); uerr != nil {
@@ -710,7 +705,22 @@ func (h *Hub) handleCommandResult(client *ClientConnection, env *response.WSEnve
 		return
 	}
 
-	// 8. 查询技能 + RAG 上下文
+	// 6. 构建 LLM 上下文（小模型只保留单轮用户消息）
+	singleTurn := modelConfig.IsSmallModel == 1
+	llmMessages, err := buildLLMMessages(aiCtx, conversation, singleTurn)
+	if err != nil {
+		if uerr := updateMessageStatus(writeCtx, assistantMsgID, "error", fmt.Sprintf("构建上下文失败: %v", err)); uerr != nil {
+			logger.Errorf("[Hub] 构建上下文失败更新消息状态出错: message_id=%d, err=%v", assistantMsgID, uerr)
+		}
+		h.sendError(client, fmt.Sprintf("构建上下文失败: %v", err))
+		return
+	}
+
+	// 7. 注入命令执行结果到 system message
+	round, _ := nextCommandRound(aiCtx, client.UserID, convID)
+	llmMessages = injectCommandResultsIntoMessages(llmMessages, resultsRaw, round, MaxCommandRounds)
+
+	// 8. 查询技能 + RAG 上下文（小模型跳过 RAG 记忆注入）
 	var skills []response.SkillInfo
 	if skillList, err := model.MResSkills.ListEnabledByUserId(aiCtx, client.UserID); err == nil {
 		for _, s := range skillList {
@@ -721,9 +731,13 @@ func (h *Hub) handleCommandResult(client *ClientConnection, env *response.WSEnve
 			})
 		}
 	}
-	ragContext, ragErr := resolveRagContextFromLatestMessage(aiCtx, convID, client.UserID)
-	if ragErr != nil {
-		logger.Warnf("[Hub] 解析 RAG 上下文失败: conversation_id=%d, user_id=%d, err=%v", convID, client.UserID, ragErr)
+	var ragContext *RagContext
+	if modelConfig.IsSmallModel != 1 {
+		var ragErr error
+		ragContext, ragErr = resolveRagContextFromLatestMessage(aiCtx, convID, client.UserID)
+		if ragErr != nil {
+			logger.Warnf("[Hub] 解析 RAG 上下文失败: conversation_id=%d, user_id=%d, err=%v", convID, client.UserID, ragErr)
+		}
 	}
 
 	// 9. 调用 aiagent SSE 流

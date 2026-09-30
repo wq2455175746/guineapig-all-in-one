@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"crypto/rsa"
+	"encoding/json"
 	"errors"
 	"guineapig/config"
 	"guineapig/internal/model"
@@ -60,6 +61,12 @@ func CreateAiModel(ctx context.Context, req *request.AiModelCreateRequest) (*res
 		req.ModelType = "LLM"
 	}
 
+	// api_key 必须能解密且解密结果非空，防止"空字符串密文"入库导致聊天时 api_key 为空
+	plain, derr := DecryptKey(req.ApiKey)
+	if derr == nil && strings.TrimSpace(plain) == "" {
+		return nil, errors.New("api_key 不能为空")
+	}
+
 	m := &model.UserAiModel{
 		UserId:       req.UserId,
 		ModelCode:    utils.UUID(),
@@ -68,8 +75,14 @@ func CreateAiModel(ctx context.Context, req *request.AiModelCreateRequest) (*res
 		ApiKey:       req.ApiKey,
 		ProviderCode: req.ProviderCode,
 		ModelType:    req.ModelType,
+		MaxTokens:    req.MaxTokens,
+		IsSmallModel: req.IsSmallModel,
 		Status:       req.Status,
-		Established:  req.Established,
+		Established:  1,
+	}
+	if len(req.ExtraParams) > 0 {
+		s := string(req.ExtraParams)
+		m.ExtraParams = &s
 	}
 
 	if err := m.Create(ctx); err != nil {
@@ -104,6 +117,19 @@ func UpdateAiModel(ctx context.Context, req *request.AiModelUpdateRequest) error
 		return errors.New("无权操作该记录")
 	}
 
+	// 更换 api_key 时同样校验解密结果非空，避免覆盖为空的密文
+	if req.ApiKey != "" {
+		plain, derr := DecryptKey(req.ApiKey)
+		if derr == nil && strings.TrimSpace(plain) == "" {
+			return errors.New("api_key 不能为空")
+		}
+	}
+
+	maxTokens := req.MaxTokens
+	if maxTokens <= 0 {
+		maxTokens = existing.MaxTokens
+	}
+
 	m := &model.UserAiModel{
 		Id:           req.Id,
 		ApiUrl:       req.ApiUrl,
@@ -111,8 +137,14 @@ func UpdateAiModel(ctx context.Context, req *request.AiModelUpdateRequest) error
 		ProviderCode: req.ProviderCode,
 		ModelType:    req.ModelType,
 		ModelName:    req.ModelName,
+		MaxTokens:    maxTokens,
+		IsSmallModel: req.IsSmallModel,
 		Status:       req.Status,
-		Established:  req.Established,
+		Established:  existing.Established,
+	}
+	if len(req.ExtraParams) > 0 {
+		s := string(req.ExtraParams)
+		m.ExtraParams = &s
 	}
 	// 更新操作不修改 api_key，保持 DB 中原有的加密值
 	return m.Update(ctx)
@@ -211,17 +243,23 @@ func ListAiModel(ctx context.Context, req *request.AiModelListRequest) (*respons
 
 	resItems := make([]response.AiModelItem, 0, len(items))
 	for _, item := range items {
-		resItems = append(resItems, response.AiModelItem{
+		resItem := response.AiModelItem{
 			Id:           item.Id,
 			ModelCode:    item.ModelCode,
 			ModelName:    item.ModelName,
 			ApiUrl:       item.ApiUrl,
 			ProviderCode: item.ProviderCode,
 			ModelType:    item.ModelType,
+			MaxTokens:    item.MaxTokens,
+			IsSmallModel: item.IsSmallModel,
 			ApiKey:       "***", // 加密密钥不返回前端，统一隐藏
 			Status:       item.Status,
 			Established:  item.Established,
-		})
+		}
+		if item.ExtraParams != nil {
+			resItem.ExtraParams = json.RawMessage(*item.ExtraParams)
+		}
+		resItems = append(resItems, resItem)
 	}
 
 	return &response.AiModelListResponse{

@@ -36,10 +36,11 @@ const MaxCommandRounds = 3
 
 // ModelConfig 解密后的 LLM 连接参数
 type ModelConfig struct {
-	ApiUrl    string
-	ApiKey    string
-	ModelName string
-	MaxTokens int
+	ApiUrl       string
+	ApiKey       string
+	ModelName    string
+	MaxTokens    int
+	IsSmallModel int8
 }
 
 // RagContext RAG 知识库检索配置（从 DB 解析后直接透传给 aiagent）
@@ -58,7 +59,8 @@ type RagContext struct {
 // ========== 构建 LLM 上下文 ==========
 
 // buildLLMMessages 从 DB 加载会话历史消息，构建 LLM 消息数组
-func buildLLMMessages(ctx context.Context, conversation *model.ChatConversation) ([]map[string]string, error) {
+// singleTurn=true 时（小模型）只保留 system + 最新一条用户消息，不注入历史对话
+func buildLLMMessages(ctx context.Context, conversation *model.ChatConversation, singleTurn ...bool) ([]map[string]string, error) {
 	var messages []map[string]string
 
 	// System prompt
@@ -68,8 +70,20 @@ func buildLLMMessages(ctx context.Context, conversation *model.ChatConversation)
 	}
 	messages = append(messages, map[string]string{"role": "system", "content": systemPrompt})
 
-	// 从 DB 加载最近 20 条已完成的消息
 	db := plugin.GetDB(ctx)
+
+	// 小模型：单轮上下文，只取最新用户消息
+	if len(singleTurn) > 0 && singleTurn[0] {
+		var latestUser model.ChatMessage
+		if err := db.Where("conversation_id = ? AND role = 'user' AND status = 'completed'", conversation.Id).
+			Order("created_at DESC").
+			First(&latestUser).Error; err == nil {
+			messages = append(messages, map[string]string{"role": "user", "content": latestUser.Content})
+		}
+		return messages, nil
+	}
+
+	// 从 DB 加载最近 20 条已完成的消息
 	var msgs []model.ChatMessage
 	if err := db.Where("conversation_id = ? AND status = 'completed'", conversation.Id).
 		Order("created_at ASC").
@@ -105,14 +119,15 @@ func loadModelConfig(ctx context.Context, modelId, userId int64) (*ModelConfig, 
 
 	defaultMaxTokens := aiModel.MaxTokens
 	if defaultMaxTokens <= 0 {
-		defaultMaxTokens = 8192
+		defaultMaxTokens = 4096
 	}
 
 	return &ModelConfig{
-		ApiUrl:    aiModel.ApiUrl,
-		ApiKey:    apiKey,
-		ModelName: aiModel.ModelName,
-		MaxTokens: defaultMaxTokens,
+		ApiUrl:       aiModel.ApiUrl,
+		ApiKey:       apiKey,
+		ModelName:    aiModel.ModelName,
+		MaxTokens:    defaultMaxTokens,
+		IsSmallModel: aiModel.IsSmallModel,
 	}, nil
 }
 

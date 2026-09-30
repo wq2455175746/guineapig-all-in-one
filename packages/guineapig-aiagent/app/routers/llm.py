@@ -159,6 +159,7 @@ async def chat_stream(request: LLMStreamRequest):
         user_id=request.user_id,
         web_search_enabled=request.web_search_enabled,
         rag_context=rag_context,
+        is_small_model=request.is_small_model,
     )
 
     return StreamingResponse(

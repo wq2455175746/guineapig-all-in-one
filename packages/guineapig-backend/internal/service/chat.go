@@ -53,12 +53,16 @@ func SendChatMessage(ctx context.Context, req *request.ChatSendRequest) (*respon
 		if conversation.UserId != req.UserId {
 			return nil, common.BizError(constant.ParamErr, "无权操作该会话")
 		}
-		// 更新会话时间
+		// 更新会话时间与当前模型（复用会话时同步模型选择，避免旧/已删除模型的 id 残留导致加载失败）
 		conversation.UpdatedAt = now
+		conversation.ModelId = req.ModelId
 		if err := plugin.GetDB(ctx).Model(&model.ChatConversation{}).
 			Where("id = ?", conversation.Id).
-			Update("updated_at", now).Error; err != nil {
-			logger.Errorf("[SendChatMessage] 更新会话时间失败: conversation_id=%d, err=%v", conversation.Id, err)
+			Updates(map[string]any{
+				"updated_at": now,
+				"model_id":   req.ModelId,
+			}).Error; err != nil {
+			logger.Errorf("[SendChatMessage] 更新会话时间/模型失败: conversation_id=%d, err=%v", conversation.Id, err)
 		}
 	} else {
 		// 创建新会话

@@ -361,6 +361,16 @@ func (h *Hub) handleAgentSend(client *ClientConnection, env *response.WSEnvelope
 
 	// 2. 创建/获取会话 + 用户消息（以 WS 连接鉴权身份覆盖 payload 中的 userId）
 	req.UserId = client.UserID
+
+	// 2.1 小模型不支持 Agent 模式，直接提示用户（在创建消息前拒绝，避免落库无效消息）
+	if modelConfig, modelErr := loadModelConfig(ctx, req.ModelId, client.UserID); modelErr != nil {
+		h.sendError(client, fmt.Sprintf("加载模型配置失败: %v", modelErr))
+		return
+	} else if modelConfig.IsSmallModel == 1 {
+		h.sendError(client, "当前模型能力不支持 Agent 模式，请切换为大模型后重试")
+		return
+	}
+
 	msgResp, err := SendChatMessage(ctx, req)
 	if err != nil {
 		h.sendError(client, fmt.Sprintf("创建消息失败: %v", err))

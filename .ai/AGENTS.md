@@ -161,10 +161,17 @@ See `.ai/rules/architecture.md` for full rules.
 
 ## Harness Auto-Updater
 
-`scripts/harness_autoupdate.py` 在 PostCompact hook 上自动运行：
+`scripts/harness_autoupdate.py` 自动维护 `.ai/` 状态：
 - 保存当前任务检查点到 `.ai/checkpoints/`
 - 记录 session 事件到 `.ai/traces/failures.log`
 - 保留最近 3 个 checkpoint，自动清理旧的
+- 刷新 `.ai/CURRENT_FOCUS` 的 `updated_at` 时间戳
+
+**触发方式（harness 相关）：**
+- Claude Code：`.claude/settings.json` 的 `PostCompact` hook（auto + manual）
+- 手动执行：`python3 scripts/harness_autoupdate.py [--reason=compact]`
+
+**其他 harness（opencode 等）：** 未内置 hook 时，可在上下文压缩/会话结束时手动运行一次，或接入对应平台的 hook/plugin 事件（opencode 可用 `session.compacted`）。
 
 ## Key Docs
 

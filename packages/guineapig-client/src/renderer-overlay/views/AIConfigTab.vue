@@ -26,6 +26,18 @@
           <Column field="api_key" header="API Key"></Column>
           <Column field="model_name" header="模型"></Column>
           <Column field="model_type" header="模型类型"></Column>
+          <Column header="Max Tokens">
+            <template #body="{ data }">
+              {{ data.max_tokens }}
+            </template>
+          </Column>
+          <Column header="类型">
+            <template #body="{ data }">
+              <span :style="{ color: data.is_small_model === 1 ? '#f59e0b' : '#999', fontSize: '13px' }">
+                {{ data.is_small_model === 1 ? '小模型' : '大模型' }}
+              </span>
+            </template>
+          </Column>
           <Column header="连通状态">
             <template #body="{ data }">
               <div style="display: flex; align-items: center; gap: 4px;">
@@ -109,6 +121,20 @@
             </div>
           </div>
         </div>
+        <div class="form-row">
+          <div class="field">
+            <label class="field-label">最大Tokens(上下文)</label>
+            <InputNumber v-model="formData.max_tokens" :min="1" :max="32768" inputId="max-tokens"
+              class="field-input" />
+          </div>
+          <div class="field">
+            <label class="field-label">小模型</label>
+            <div class="field-switch">
+              <InputSwitch v-model="formData.is_small_model" />
+              <span class="switch-label">{{ formData.is_small_model ? '是(上下文注入用户消息)' : '否' }}</span>
+            </div>
+          </div>
+        </div>
       </div>
       <template #footer>
         <div class="dialog-footer">
@@ -140,12 +166,20 @@ import Tag from 'primevue/tag'
 import Dialog from 'primevue/dialog'
 import Select from 'primevue/select'
 import InputSwitch from 'primevue/inputswitch'
+import InputNumber from 'primevue/inputnumber'
 
 const confirm = useConfirm()
 const toast = useToast()
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:6880'
 const userId = localStorage.getItem('user_id') || ''
+
+// 扩展参数规范化：undefined / null / 空对象视为未提供，返回 undefined 以便调用方不携带该字段
+function normalizeExtraParams(ep: any): any {
+  if (ep == null) return undefined
+  if (typeof ep === 'object' && !Array.isArray(ep) && Object.keys(ep).length === 0) return undefined
+  return ep
+}
 
 // ========== 数据类型 ==========
 interface AiModelItem {
@@ -154,9 +188,12 @@ interface AiModelItem {
   api_url: string
   provider_code: string
   model_type: string
+  max_tokens: number
+  is_small_model: number
   api_key?: string
   status: number
   established: number
+  extra_params?: any
 }
 
 // ========== API请求 ==========
@@ -189,18 +226,25 @@ async function fetchList() {
 async function createModel(): Promise<boolean> {
   try {
     const encryptedKey = await encryptApiKey(formData.api_key)
+    const body: Record<string, any> = {
+      user_id: userId,
+      model_name: formData.model_name,
+      api_url: formData.api_url,
+      api_key: encryptedKey,
+      provider_code: formData.provider_code,
+      model_type: formData.model_type,
+      max_tokens: formData.max_tokens,
+      is_small_model: formData.is_small_model ? 1 : 0,
+      status: formData.status ? 1 : 0
+    }
+    const extraParams = normalizeExtraParams(formData.extra_params)
+    if (extraParams !== undefined) {
+      body.extra_params = extraParams
+    }
     const res = await fetch(`${API_BASE_URL}/api/v1/aimodel/create`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        user_id: userId,
-        model_name: formData.model_name,
-        api_url: formData.api_url,
-        api_key: encryptedKey,
-        provider_code: formData.provider_code,
-        model_type: formData.model_type,
-        status: formData.status ? 1 : 0
-      })
+      body: JSON.stringify(body)
     })
     const data = await res.json()
     if (data.code !== 0) {
@@ -223,10 +267,16 @@ async function updateModel(): Promise<boolean> {
       api_url: formData.api_url,
       provider_code: formData.provider_code,
       model_type: formData.model_type,
+      max_tokens: formData.max_tokens,
+      is_small_model: formData.is_small_model ? 1 : 0,
       status: formData.status ? 1 : 0
     }
     if (changingApiKey.value && formData.api_key) {
       body.api_key = await encryptApiKey(formData.api_key)
+    }
+    const extraParams = normalizeExtraParams(formData.extra_params)
+    if (extraParams !== undefined) {
+      body.extra_params = extraParams
     }
     const res = await fetch(`${API_BASE_URL}/api/v1/aimodel/update`, {
       method: 'POST',
@@ -304,7 +354,10 @@ const defaultForm = () => ({
   model_name: '',
   model_type: '',
   api_key: '',
-  status: true
+  max_tokens: 4096,
+  is_small_model: false,
+  status: true,
+  extra_params: undefined as any
 })
 
 const formData = reactive(defaultForm())
@@ -315,6 +368,7 @@ const dialogTitle = computed(() =>
 function openAddDialog() {
   dialogMode.value = 'add'
   editingId.value = 0
+  changingApiKey.value = true
   Object.assign(formData, defaultForm())
   dialogVisible.value = true
 }
@@ -329,7 +383,10 @@ function openEditDialog(data: AiModelItem) {
     model_name: data.model_name,
     model_type: data.model_type,
     api_key: '',
-    status: data.status === 1
+    max_tokens: data.max_tokens || 4096,
+    is_small_model: data.is_small_model === 1,
+    status: data.status === 1,
+    extra_params: data.extra_params
   })
   dialogVisible.value = true
 }
@@ -394,6 +451,14 @@ async function testConnection(): Promise<void> {
 async function submitDialog() {
   if (!formData.provider_code || !formData.api_url || !formData.model_name) {
     toast.add({ severity: 'warn', summary: '请填写必填字段', detail: '供应商、URL、模型为必填项', life: 2000 })
+    return
+  }
+  if (dialogMode.value === 'add' && !formData.api_key) {
+    toast.add({ severity: 'warn', summary: '请填写API Key', detail: '添加模型必须填写API Key', life: 2000 })
+    return
+  }
+  if (dialogMode.value === 'edit' && changingApiKey.value && !formData.api_key) {
+    toast.add({ severity: 'warn', summary: '请填写API Key', detail: '更换密钥时不能为空', life: 2000 })
     return
   }
 

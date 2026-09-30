@@ -17,11 +17,13 @@ type UserAiModel struct {
 	UserId       int64     `gorm:"column:user_id"`
 	ModelCode    string    `gorm:"column:model_code"`
 	ModelName    string    `gorm:"column:model_name"`
-	MaxTokens    int       `gorm:"column:max_tokens;default:8192"`
+	MaxTokens    int       `gorm:"column:max_tokens;default:4096"`
+	IsSmallModel int8      `gorm:"column:is_small_model;default:0"`
 	ApiUrl       string    `gorm:"column:api_url"`
 	ApiKey       string    `gorm:"column:api_key"`
 	ProviderCode string    `gorm:"column:provider_code"`
 	ModelType    string    `gorm:"column:model_type"`
+	ExtraParams  *string   `gorm:"column:extra_params;type:json"`
 	Established  int8      `gorm:"column:established"`
 	Status       int8      `gorm:"column:status"`
 	CreatedBy    string    `gorm:"column:created_by"`
@@ -46,18 +48,23 @@ func (m *UserAiModel) Update(ctx context.Context) error {
 
 	// 使用 map 而不是 struct，确保 status=0 等零值字段也能更新到数据库
 	updates := map[string]any{
-		"model_name":    m.ModelName,
-		"max_tokens":    m.MaxTokens,
-		"api_url":       m.ApiUrl,
-		"provider_code": m.ProviderCode,
-		"model_type":    m.ModelType,
-		"status":        m.Status,
-		"established":   m.Established,
-		"updated_at":    m.UpdatedAt,
+		"model_name":     m.ModelName,
+		"max_tokens":     m.MaxTokens,
+		"is_small_model": m.IsSmallModel,
+		"api_url":        m.ApiUrl,
+		"provider_code":  m.ProviderCode,
+		"model_type":     m.ModelType,
+		"status":         m.Status,
+		"established":    m.Established,
+		"updated_at":     m.UpdatedAt,
 	}
 	// api_key 只在非空时才包含（前端不修改密钥时不发送，避免覆盖已存储的加密密钥）
 	if m.ApiKey != "" {
 		updates["api_key"] = m.ApiKey
+	}
+	// extra_params 只在非空时才包含，避免清空已有扩展参数
+	if m.ExtraParams != nil {
+		updates["extra_params"] = *m.ExtraParams
 	}
 
 	return plugin.GetDB(ctx).Model(m).Where("id = ? AND deleted_at IS NULL", m.Id).Updates(updates).Error

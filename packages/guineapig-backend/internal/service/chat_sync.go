@@ -51,13 +51,7 @@ func SyncChatMessage(ctx context.Context, userID int64, platform, extChatID, con
 		logger.Errorf("[SyncChat] 更新会话消息计数失败: conversation_id=%d, err=%v", conversation.Id, err)
 	}
 
-	// 3. 构建 LLM 上下文
-	messages, err := buildLLMMessages(ctx, conversation)
-	if err != nil {
-		return "", fmt.Errorf("构建 LLM 上下文失败: %w", err)
-	}
-
-	// 4. 加载模型配置
+	// 3. 加载模型配置
 	// 优先从 Redis 读取用户最近一次 client chat 的配置（模型选择和联网搜索开关）
 	// Redis 中无缓存时使用第一个可用模型（兼容旧版行为）
 	modelID, webSearchEnabled, _ := GetUserChatConfig(ctx, userID)
@@ -69,6 +63,12 @@ func SyncChatMessage(ctx context.Context, userID int64, platform, extChatID, con
 	}
 	if err != nil {
 		return "", fmt.Errorf("加载模型配置失败: %w", err)
+	}
+
+	// 4. 构建 LLM 上下文（小模型只保留单轮用户消息）
+	messages, err := buildLLMMessages(ctx, conversation, modelConfig.IsSmallModel == 1)
+	if err != nil {
+		return "", fmt.Errorf("构建 LLM 上下文失败: %w", err)
 	}
 
 	// 5. 调用 AiAgent 获取回复（传入 user_id 和 session_id 以便指标上报）
@@ -161,7 +161,7 @@ func loadDefaultModelConfig(ctx context.Context, userID int64) (*ModelConfig, er
 
 	defaultMaxTokens := aiModel.MaxTokens
 	if defaultMaxTokens <= 0 {
-		defaultMaxTokens = 8192
+		defaultMaxTokens = 4096
 	}
 
 	return &ModelConfig{
