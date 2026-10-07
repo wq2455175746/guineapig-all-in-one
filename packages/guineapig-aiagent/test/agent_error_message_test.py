@@ -23,6 +23,16 @@ def captured_logs():
         app_logger.remove(sink_id)
 
 
+@pytest.fixture
+def captured_records():
+    records = []
+    sink_id = app_logger.add(lambda m: records.append(m.record), level="DEBUG")
+    try:
+        yield records
+    finally:
+        app_logger.remove(sink_id)
+
+
 def test_error_result_shape_and_log(captured_logs):
     r = error_result(
         "联网搜索失败：关键词为空",
@@ -49,12 +59,16 @@ def test_classify_exception_unknown():
     assert classify_exception(ValueError("x")) == "unknown"
 
 
-def test_exception_result_logs_traceback_and_shape(captured_logs):
+def test_exception_result_logs_traceback_and_shape(captured_records):
     r = exception_result(ValueError("bad"), capability="rag", context="执行异常")
     assert r["error_type"] == "unknown"
     assert "bad" in r["error"]
     assert r["result"] == ""
-    assert any("能力执行异常" in m for m in captured_logs)
+    assert any("能力执行异常" in rec["message"] for rec in captured_records)
+    assert any(
+        rec["exception"] is not None and rec["exception"].type is ValueError
+        for rec in captured_records
+    )
 
 
 def test_step_failure_defaults():
