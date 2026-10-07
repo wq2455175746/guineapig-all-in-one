@@ -30,7 +30,6 @@ from ..models import (
 )
 from .handlers import CapabilityHandlers
 from .middleware import (
-    BlockResult,
     MiddlewareRunner,
     StepContext,
     default_middlewares,

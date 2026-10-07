@@ -365,6 +365,55 @@ class TestStreamEvents:
         assert StreamEventType.STEP_FAILED.value in event_types
         assert StreamEventType.STEP_COMPLETED.value not in event_types
 
+    @pytest.mark.asyncio
+    async def test_non_mcp_client_step_resolves_ref(self, monkeypatch):
+        """回归：非 MCP 的 CLIENT 步骤含可解析 {{ref}} 时应解析后下发。
+
+        旧逻辑对非 MCP client 步骤调用 _inject_mcp_conn_params，其直接返回
+        dict(params) 而不解析引用，导致可解析的 {{s1.result}} 被误判为未解析而失败。
+        新流程由 ParamResolutionMiddleware 无条件解析，client 应收到解析后的参数。
+        """
+        from app.agent.executor import handlers as handlers_module
+
+        async def _fake_execute(capability, params):
+            if capability == "web_search":
+                return {"result": "HELLO"}
+            return {"result": ""}
+
+        monkeypatch.setattr(
+            handlers_module.CapabilityHandlers,
+            "execute",
+            staticmethod(_fake_execute),
+        )
+
+        dag = DAGDefinition(steps=[
+            DAGStep(step_id="s1", capability="web_search", action="search"),
+            DAGStep(
+                step_id="s2", capability="cli", action="x",
+                execution_location=ExecutionLocation.CLIENT,
+                depends_on=["s1"],
+                params={"command": "echo {{s1.result}}"},
+            ),
+        ])
+        engine = DAGExecutionEngine(dag)
+        events = []
+        async for event in engine.execute():
+            events.append(event)
+
+        awaiting = [
+            e for e in events
+            if e.event == StreamEventType.STEP_AWAITING_CLIENT.value
+            and e.data.get("step_id") == "s2"
+        ]
+        assert len(awaiting) == 1
+        assert awaiting[0].data["params"]["command"] == "echo HELLO"
+
+        failed_ids = [
+            e.data.get("step_id") for e in events
+            if e.event == StreamEventType.STEP_FAILED.value
+        ]
+        assert "s2" not in failed_ids
+
 
 class TestMatchMcpServer:
     """MCP server 前缀匹配 — LLM 可能把 capability 写成 mcp_{server} 或 mcp_{server}_{tool}"""
