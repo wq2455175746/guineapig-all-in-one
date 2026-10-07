@@ -173,3 +173,28 @@ async def test_truncation_middleware_in_default_chain(mocker):
     engine = DAGExecutionEngine(dag)  # 默认中间件
     _ = [e async for e in engine.execute()]
     assert engine.step_results["s1"].get("truncated") is True
+
+
+@pytest.mark.asyncio
+async def test_on_step_error_observes_failure(mocker):
+    from app.agent.executor import handlers as handlers_mod
+
+    observed = []
+
+    class Observer(StepMiddleware):
+        name = "observer"
+
+        async def on_step_error(self, ctx):
+            observed.append((ctx.step.step_id, ctx.error))
+
+    async def fail(capability, params):
+        return {"error": "boom", "error_type": "tool_error", "result": ""}
+
+    mocker.patch.object(handlers_mod.CapabilityHandlers, "execute", side_effect=fail)
+    dag = DAGDefinition(
+        steps=[DAGStep(step_id="s1", capability="rag", action="x", max_retries=0)],
+        original_intent="t",
+    )
+    engine = DAGExecutionEngine(dag, middlewares=[Observer()])
+    _ = [e async for e in engine.execute()]
+    assert observed == [("s1", "boom")]

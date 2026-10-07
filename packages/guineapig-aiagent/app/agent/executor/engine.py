@@ -499,6 +499,10 @@ class DAGExecutionEngine:
 
                     # 保存错误结果以便依赖检查
                     self.step_results[step.step_id] = {"error": err_msg}
+
+                    ctx.error = err_msg
+                    ctx.error_type = "client_error"
+                    await self._runner.on_step_error(ctx)
             return
 
         # 执行（带重试）
@@ -611,6 +615,12 @@ class DAGExecutionEngine:
             }
 
             logger.error(f"[Engine] Step {step.step_id} failed: {last_error}")
+
+            ctx.error = last_error
+            ctx.error_type = last_error_type
+            ctx.error_suggestion = last_error_suggestion
+            await self._runner.on_step_error(ctx)
+
             yield self._event(
                 StreamEventType.STEP_FAILED,
                 {
