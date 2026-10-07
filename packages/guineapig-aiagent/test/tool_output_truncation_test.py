@@ -1,5 +1,10 @@
 """工具输出截断 — 双限制 / 双向策略 / UTF-8 边界安全。"""
 
+import pytest
+
+from app.agent.executor import handlers as handlers_mod
+from app.agent.executor.engine import DAGExecutionEngine
+from app.agent.models import DAGDefinition, DAGStep
 from app.agent.executor.truncate import (
     TruncationResult,
     truncate_head,
@@ -133,3 +138,22 @@ def test_truncation_settings_defaults():
     assert settings.AGENT_TOOL_OUTPUT_TRUNCATION_ENABLED is True
     assert settings.AGENT_TOOL_OUTPUT_MAX_LINES == 2000
     assert settings.AGENT_TOOL_OUTPUT_MAX_BYTES == 51200
+
+
+@pytest.mark.asyncio
+async def test_engine_truncates_huge_server_result(mocker):
+    async def huge(capability, params):
+        return {"result": "line\n" * 100000, "count": 1}
+
+    mocker.patch.object(handlers_mod.CapabilityHandlers, "execute", side_effect=huge)
+    dag = DAGDefinition(
+        steps=[DAGStep(step_id="s1", capability="rag", action="x", max_retries=0)],
+        original_intent="t",
+    )
+    engine = DAGExecutionEngine(dag)
+    _ = [e async for e in engine.execute()]
+
+    stored = engine.step_results["s1"]
+    assert stored["truncated"] is True
+    assert "输出已截断" in stored["result"]
+    assert len(stored["result"]) < 100_000

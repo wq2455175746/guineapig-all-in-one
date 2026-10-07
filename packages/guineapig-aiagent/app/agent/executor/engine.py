@@ -31,6 +31,7 @@ from ..models import (
 from .handlers import CapabilityHandlers
 from .errors import StepFailure, exception_result
 from .replanner import Replanner
+from .truncate import truncate_tool_result
 from ..event_manager import AgentEventManager
 
 
@@ -313,6 +314,15 @@ class DAGExecutionEngine:
 
     # ── 步骤执行 ──
 
+    def _truncate_result(self, result: dict, capability: str) -> dict:
+        return truncate_tool_result(
+            result,
+            capability,
+            enabled=settings.AGENT_TOOL_OUTPUT_TRUNCATION_ENABLED,
+            max_lines=settings.AGENT_TOOL_OUTPUT_MAX_LINES,
+            max_bytes=settings.AGENT_TOOL_OUTPUT_MAX_BYTES,
+        )
+
     async def _execute_step(
         self,
         step: DAGStep,
@@ -399,7 +409,9 @@ class DAGExecutionEngine:
                 step_end = datetime.now(timezone.utc).isoformat()
                 if delegate_result and not delegate_result.get("error"):
                     # 成功
-                    result_data = delegate_result.get("result", {})
+                    result_data = self._truncate_result(
+                        delegate_result.get("result", {}) or {}, step.capability
+                    )
                     self.step_results[step.step_id] = result_data
                     entry.status = "completed"
                     entry.completed_at = step_end
@@ -556,6 +568,7 @@ class DAGExecutionEngine:
 
         if result and "error" not in result:
             # 成功
+            result = self._truncate_result(result, step.capability)
             self.step_results[step.step_id] = result
             entry.status = "completed"
             entry.completed_at = step_end
