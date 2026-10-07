@@ -246,3 +246,8 @@ const DEFAULT_ALLOWED_COMMAND_BINARIES = [...newList]
 **错误**：主进程关键 handler（execute-command/skill/MCP/安全拦截）无 logger 调用，renderer 的 console.log/error 只进 DevTools 不进文件，日志文件只有启动信息，线上问题无从排查
 **正确**：主进程关键路径补 logger.info/error（命令执行全流程 + stdout/stderr 截断 500B）；renderer console warning/error 经 attachRendererLogging 转发到文件；Electron 42 用新 `console-message` 事件 API（details 直挂参数）
 **原因**：没有落盘日志等于没有观测手段，用户报错只能靠猜
+
+## AP-036: 小模型照搬大模型的 system prompt 注入策略
+**错误**：所有模型走同一套 pipeline——搜索/RAG 结果 + 无条件追加的英文 Command Generation Rules 全部堆到 system prompt 末尾；8k 小模型（guineapig）跟不住，联网搜索"注入了但模型不用"，回复"我是AI模型，没有直接访问实时数据"
+**正确**：模型配置加 `is_small_model` 标记；小模型时搜索/RAG 注入当前 user 消息、跳过历史与 RAG、Command Rules 换一行简短中文提示；大模型保持 system 注入不变
+**原因**：system prompt 注入是业界标准，但隐含"模型指令跟随足够强"的前提。小模型对 system 多块堆叠的注意力弱，指令块越多越可能整段忽略；注入位置必须按模型能力分级

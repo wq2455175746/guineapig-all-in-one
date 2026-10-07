@@ -173,6 +173,20 @@ See `.ai/rules/architecture.md` for full rules.
 
 **其他 harness（opencode 等）：** 未内置 hook 时，可在上下文压缩/会话结束时手动运行一次，或接入对应平台的 hook/plugin 事件（opencode 可用 `session.compacted`）。
 
+## LLM 上下文注入策略（2026-09-30 起）
+
+模型表 `user_aimodel.is_small_model` 决定注入位置（对照实验定位，见 lessons L059-061 / SP-041）：
+
+| 内容 | 大模型（is_small_model=0，默认） | 小模型（is_small_model=1） |
+|------|------|------|
+| 对话历史 | 最近 20 条 | **只保留最新 1 条用户消息（singleTurn）** |
+| RAG 记忆 | 注入 system | **跳过** |
+| 网络搜索 | 注入 system | 注入当前 user 消息 |
+| Command Rules | 完整注入 | 一行简短提示 |
+| Agent DAG 模式 | 支持 | 拒绝（提示切换模型） |
+
+> 排错经验：小模型对 system prompt 多块堆叠指令跟随弱；怀疑"注入没生效"时用最小对照实验（改一个变量跑多组，结果需重复验证），Langfuse/token 只能证明内容进了请求，不能证明模型用了它。
+
 ## Key Docs
 
 | 文件 | 用途 |

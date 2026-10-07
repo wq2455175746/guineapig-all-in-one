@@ -521,6 +521,33 @@
       "context": "命令参数含 `>` 被 SAFE_ARG_TOKEN 拒绝（'命令参数包含非法字符: >'），用户误以为 bug；实际 spawn(shell:false) 下 shell 操作符不可用是安全设计",
       "action": "拒绝信息明确提示'不支持 shell 重定向/管道等操作符，技能请改用白名单内二进制直接写文件'；技能作者应避免 `echo x > file`，改用 python3/node/cp/printf 等白名单内直接写文件的方式",
       "tags": ["client", "security", "shell", "commands"]
+    },
+    {
+      "id": "L059",
+      "date": "2026-09-30",
+      "type": "bugfix",
+      "title": "小模型对 system prompt 多块堆叠的指令跟随弱：搜索注入了但模型不用",
+      "context": "联网搜索日志显示'获取到 16 条结果，注入 5 条'且 Langfuse 确认搜索块已在请求里，但 guineapig（8k 本地小模型）回复'我是AI模型，没有直接访问实时数据'，完全不引用搜索内容",
+      "action": "用对照实验定位：对 vLLM 直接构造 4 组 prompt（纯搜索块/搜索+Command Rules/历史/事实放 user 消息）逐一测。结论：小模型能跟上干净的 system 搜索块（无历史时），一旦 system 里堆上无条件注入的英文 Command Generation Rules 块，就整段忽略；事实放 user 消息时遵从度最高。修复：模型配置加 is_small_model 标记，小模型时搜索/RAG 注入当前 user 消息、跳过历史与 RAG、Command Rules 换成一行简短提示",
+      "tags": ["aiagent", "llm", "small-model", "system-prompt", "injection"]
+    },
+    {
+      "id": "L060",
+      "date": "2026-09-30",
+      "type": "pattern",
+      "title": "LLM 行为类问题用对照实验排错，不只看日志/trace",
+      "context": "Langfuse trace 显示搜索内容在请求里、token 统计(input_token=107)在注入前计算——日志/trace 都无法直接回答'模型到底有没有用注入内容'",
+      "action": "对本地 vLLM 端点直接构造最小对照实验（改一个变量：system vs user 位置、加不加某指令块、带不带历史），跑多组对比模型是否引用注入内容；单次实验结果不可靠，需重复（本次 system-only 第一次成功、加历史后失败），逐步逼近根因",
+      "tags": ["debugging", "llm", "experiment", "contrast-test"]
+    },
+    {
+      "id": "L061",
+      "date": "2026-09-30",
+      "type": "design",
+      "title": "上下文注入按模型能力分级：大模型走 system，小模型走 user 消息",
+      "context": "业内标准做法是 RAG/搜索上下文注入 system prompt，但那假设模型指令跟随足够强；本项目 guineapig 是 8k 小模型，跟不住堆叠的 system 块",
+      "action": "模型表 user_aimodel 加 is_small_model 标记（前端可配），backend 透传给 aiagent；小模型时：只保留网络搜索+单轮用户请求，搜索/RAG 注入最后一条 user 消息，跳过对话历史与 RAG 记忆，Command Rules 用一行简短提示；大模型行为完全不变（保持 system 注入）。Agent DAG 路径对小模型直接拒绝提示切换模型",
+      "tags": ["architecture", "small-model", "injection", "design"]
     }
   ]
 }

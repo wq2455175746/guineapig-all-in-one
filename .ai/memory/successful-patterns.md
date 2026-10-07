@@ -552,3 +552,32 @@ func (*ResFiles) FindByIds(ctx, ids []uint) ([]ResFile, error) {
 5. 日志可被系统设置→本地日志页查看/删除/导出 zip
 **效果**：docx skill 等复杂流程执行失败（mkdir/cp 被拒、`>` 参数非法、技能名称不合法）都能在日志文件里看到完整链路
 **适用**：任何需要可观测性的 Electron 客户端功能；排错第一步看 `userData/temp/logs/`
+
+## SP-041: 模型能力分级上下文注入（is_small_model）
+**做法**：模型配置加 `is_small_model` 标记（前端可配），backend 透传给 aiagent，pipeline 按标记决定注入策略：
+```go
+// backend: ModelConfig.IsSmallModel → reqMap["is_small_model"]
+// aiagent: PipelineContext.is_small_model
+```
+- **大模型**（默认）：保持业界标准——搜索/RAG/技能注入 system prompt，完整 Command Generation Rules，注入历史
+- **小模型**（is_small_model=1）：
+  1. 只保留「网络搜索 + 单轮当前用户请求」——`buildLLMMessages(singleTurn=true)` 只取 system + 最新 user 消息
+  2. 搜索/RAG 结果注入**最后一条 user 消息**（`_append_to_user_message`），落在小模型注意力最集中的位置
+  3. RAG 记忆跳过（backend 不发 + aiagent `RAGRetrievalProcessor` 双保险拦截）
+  4. Command Rules 换成一行简短提示（"回答用户问题即可，无需执行命令"）
+  5. Agent DAG 路径直接拒绝："当前模型能力不支持 Agent 模式"
+**效果**：小模型能引用注入的搜索结果（对照测试 system 注入在历史+指令块存在时被忽略、user 注入有效）；大模型行为零变化
+**适用**：任何同一套 LLM 流程要同时服务强/弱模型的项目；判断依据是实测对照而非"模型都该一样"
+
+## SP-042: LLM 注入问题用最小对照实验定位
+**做法**：怀疑"注入内容没生效"时，对模型端点直接构造最小对照 prompt 集，一次只改一个变量，跑多组对比：
+```
+组1: system=纯搜索块            → 模型是否引用？
+组2: system=搜索块+CommandRules → 引用是否消失？（定位是哪块撑崩）
+组3: 事实放 user 消息           → 遵从度是否更高？
+组4: 带历史 vs 不带历史          → 历史是否是触发条件？
+```
+- 每组先固定住 prompt 里其余所有内容，只动一个变量
+- **结果必须重复验证**（LLM 有随机性，单次成功/失败都不可靠，本次 system-only 第一次成功、加历史后失败，跑了 A1/A2/B1/B2/C 共 6 组才敢下结论）
+- Langfuse/token 统计只能证明"内容进了请求"，证明不了"模型真的用了它"——唯一证据是对照输出的内容
+**适用**：所有"注入没生效 / 模型不听指令 / 输出时好时坏"的 LLM 排错
