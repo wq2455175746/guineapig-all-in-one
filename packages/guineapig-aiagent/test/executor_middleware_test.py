@@ -2,7 +2,13 @@
 
 import pytest
 
-from app.agent.models import DAGStep, ExecutionLocation
+from app.agent.models import (
+    DAGDefinition,
+    DAGStep,
+    ExecutionLocation,
+    StreamEventType,
+)
+from app.agent.executor.engine import DAGExecutionEngine
 from app.agent.executor.middleware import (
     BlockResult,
     MiddlewareRunner,
@@ -103,3 +109,50 @@ class TestDefaultMiddlewares:
         )
         await runner.before_step(ctx)
         assert ctx.resolved_params["mcp_url"] == "http://x"
+
+
+class _BlockDelete(StepMiddleware):
+    name = "block_delete"
+
+    async def before_step(self, ctx):
+        if ctx.step.capability == "cli":
+            return BlockResult(block=True, reason="禁止执行 CLI")
+        return None
+
+
+class _TagResult(StepMiddleware):
+    name = "tag_result"
+
+    async def after_step(self, ctx):
+        if ctx.result and "result" in ctx.result:
+            return {**ctx.result, "result": ctx.result["result"] + "[tagged]"}
+        return None
+
+
+@pytest.mark.asyncio
+async def test_custom_middleware_blocks_step():
+    dag = DAGDefinition(
+        steps=[DAGStep(step_id="s1", capability="cli", action="x", max_retries=0)],
+        original_intent="t",
+    )
+    engine = DAGExecutionEngine(dag, middlewares=[_BlockDelete()])
+    events = [e async for e in engine.execute()]
+    assert any(e.event == StreamEventType.STEP_FAILED.value for e in events)
+    assert engine.step_results["s1"]["error_type"] == "unresolved_ref"
+
+
+@pytest.mark.asyncio
+async def test_custom_middleware_transforms_result(mocker):
+    from app.agent.executor import handlers as handlers_mod
+
+    async def ok(capability, params):
+        return {"result": "answer"}
+
+    mocker.patch.object(handlers_mod.CapabilityHandlers, "execute", side_effect=ok)
+    dag = DAGDefinition(
+        steps=[DAGStep(step_id="s1", capability="rag", action="x", max_retries=0)],
+        original_intent="t",
+    )
+    engine = DAGExecutionEngine(dag, middlewares=[_TagResult()])
+    _ = [e async for e in engine.execute()]
+    assert engine.step_results["s1"]["result"] == "answer[tagged]"
