@@ -122,3 +122,28 @@ async def test_server_exception_becomes_structured_error(mocker, captured_logs):
     assert stored["error_type"] == "unknown"
     assert "kaboom" in stored["error"]
     assert any("能力执行异常" in m for m in captured_logs)
+
+
+@pytest.mark.asyncio
+async def test_server_error_triggers_fallback(mocker):
+    async def fail(capability, params):
+        return {"error": "boom", "error_type": "tool_error", "result": ""}
+
+    mocker.patch.object(handlers_mod.CapabilityHandlers, "execute", side_effect=fail)
+    dag = DAGDefinition(
+        steps=[
+            DAGStep(
+                step_id="s1",
+                capability="web_search",
+                action="x",
+                max_retries=0,
+                fallback_action="skip",
+            )
+        ],
+        original_intent="t",
+    )
+    engine = DAGExecutionEngine(dag, context={"session_id": ""})
+    events = [e async for e in engine.execute()]
+
+    assert any(e.event == "step_failed" for e in events)
+    assert engine.step_results["s1"] == {"result": "(已跳过)", "fallback": True}
