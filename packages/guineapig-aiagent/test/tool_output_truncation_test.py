@@ -59,7 +59,7 @@ class TestByteLimit:
         r = truncate_head(text, max_lines=10_000, max_bytes=50)
         assert r.truncated is True
         assert r.output_bytes <= 50
-        assert r.content == "a" * 50
+        assert r.content == "abcdefghij" * 5
 
 
 class TestUtf8Safety:
