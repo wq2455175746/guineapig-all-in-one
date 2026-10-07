@@ -14,6 +14,7 @@ import re
 from datetime import datetime, timezone
 from typing import AsyncGenerator
 
+from app.config import settings
 from app.core.log import logger
 from app.services.otel_service import otel_service
 
@@ -29,6 +30,7 @@ from ..models import (
 )
 from .handlers import CapabilityHandlers
 from .errors import StepFailure, exception_result
+from .replanner import Replanner
 from ..event_manager import AgentEventManager
 
 
@@ -156,44 +158,65 @@ class DAGExecutionEngine:
                     await AgentEventManager.cleanup(session_id)
                 return
 
-        # 4. 按拓扑顺序逐个执行
+        # 4. 执行（支持有界自纠错 re-plan）
+        pending = list(sorted_steps)
+        replan_round = 0
         completed = 0
-        failed = False
 
-        for step in sorted_steps:
-            # 检查前置步骤是否全部完成
-            if not self._dependencies_resolved(step):
-                yield self._event(
-                    StreamEventType.STEP_FAILED,
-                    {
-                        "step_id": step.step_id,
-                        "error": "前置步骤未完成或已失败",
-                        "step": self._step_summary(step),
-                    },
-                )
-                failed = True
+        while pending:
+            self.failed_steps = []
+            async for event in self._execute_batch(pending, inventory):
+                yield event
+            completed += sum(
+                1
+                for s in pending
+                if "error" not in (self.step_results.get(s.step_id) or {})
+            )
+
+            if not self.failed_steps:
+                break
+            if not self._can_replan(session_id, replan_round):
                 break
 
-            # 执行单个步骤
-            async for event in self._execute_step(step, inventory):
-                yield event
-                if event.event == StreamEventType.STEP_FAILED.value:
-                    # 检查是否要执行降级
-                    step_result = self.step_results.get(step.step_id, {})
-                    if step.fallback_action and step_result.get("error"):
-                        logger.info(
-                            f"[Engine] Step {step.step_id} failed, "
-                            f"executing fallback: {step.fallback_action}"
-                        )
-                        async for fallback_event in self._execute_fallback(
-                            step, step.fallback_action
-                        ):
-                            yield fallback_event
+            replan_round += 1
+            failed = self.failed_steps[0]
+            logger.warning(
+                f"[Engine] 步骤失败，进入自纠错: "
+                f"{failed.step_id}/{failed.capability}: {failed.error[:120]}"
+            )
+            yield self._event(
+                StreamEventType.REPLAN_STARTED,
+                {
+                    "round": replan_round,
+                    "failed_step": failed.step_id,
+                    "error": failed.error[:200],
+                },
+            )
+            corrective = await asyncio.to_thread(
+                Replanner.replan,
+                original_intent=self.dag.original_intent,
+                capability_inventory=inventory,
+                capabilities_formatted=self.context.get("capabilities_formatted", ""),
+                step_results=self.step_results,
+                failed=failed,
+                trace_id=self.context.get("trace_id"),
+            )
+            if not corrective:
+                yield self._event(
+                    StreamEventType.REPLAN_FAILED, {"round": replan_round}
+                )
+                break
 
-                    # 非致命失败—继续下一步骤
-                    # 由调用方（SSE handler）决定是否终止
+            yield self._event(
+                StreamEventType.REPLAN_GENERATED,
+                {
+                    "round": replan_round,
+                    "steps": [self._step_summary(s) for s in corrective],
+                },
+            )
+            pending = corrective
 
-            completed += 1
+        failed = bool(self.failed_steps)
 
         # 5. 执行完成
         total_duration = self._elapsed_ms()
@@ -205,6 +228,7 @@ class DAGExecutionEngine:
                 "completed_steps": completed,
                 "duration_ms": total_duration,
                 "timeline": [t.model_dump() for t in self.timeline],
+                "replanned": replan_round > 0,
                 "summary": {
                     "original_intent": self.dag.original_intent,
                     "steps_completed": completed,
@@ -555,6 +579,71 @@ class DAGExecutionEngine:
                     "step": self._step_summary(step),
                 },
             )
+
+    async def _execute_batch(
+        self,
+        steps: list[DAGStep],
+        inventory: CapabilityInventory | None = None,
+    ) -> AsyncGenerator[StreamEvent, None]:
+        """执行一批步骤，记录终态失败（供 re-plan 决策）。"""
+        for step in steps:
+            if not self._dependencies_resolved(step):
+                yield self._event(
+                    StreamEventType.STEP_FAILED,
+                    {
+                        "step_id": step.step_id,
+                        "error": "前置步骤未完成或已失败",
+                        "step": self._step_summary(step),
+                    },
+                )
+                self.failed_steps.append(
+                    StepFailure(
+                        step.step_id,
+                        step.capability,
+                        step.action,
+                        "前置步骤未完成或已失败",
+                        "dependency",
+                    )
+                )
+                break
+
+            step_failed_error = None
+            async for event in self._execute_step(step, inventory):
+                if event.event == StreamEventType.STEP_FAILED.value:
+                    step_failed_error = event.data.get("error", "")
+                yield event
+                if (
+                    event.event == StreamEventType.STEP_FAILED.value
+                    and step.fallback_action
+                ):
+                    async for fallback_event in self._execute_fallback(
+                        step, step.fallback_action
+                    ):
+                        yield fallback_event
+
+            final_res = self.step_results.get(step.step_id)
+            if step_failed_error is not None and (
+                final_res is None or "error" in final_res
+            ):
+                self.failed_steps.append(
+                    StepFailure(
+                        step.step_id,
+                        step.capability,
+                        step.action,
+                        step_failed_error,
+                        (final_res or {}).get("error_type", "unknown"),
+                        (final_res or {}).get("error_suggestion", ""),
+                        dict(step.params),
+                    )
+                )
+
+    def _can_replan(self, session_id: str, round_index: int) -> bool:
+        """判断是否允许再发起一轮自纠错。"""
+        if not settings.AGENT_REPLAN_ENABLED:
+            return False
+        if not session_id:
+            return False
+        return round_index < max(0, settings.AGENT_REPLAN_MAX)
 
     async def _execute_fallback(
         self, failed_step: DAGStep, fallback_action: str

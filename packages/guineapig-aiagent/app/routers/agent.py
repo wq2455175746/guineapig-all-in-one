@@ -869,6 +869,10 @@ async def agent_chat_stream(request: AgentChatRequest):
                     "user_id": request.user_id,
                     "session_id": session_id,
                     "mcp_servers": pipeline_result["mcp_tool_infos"],
+                    "capabilities_formatted": pipeline_result.get(
+                        "capabilities_formatted", ""
+                    ),
+                    "trace_id": trace_id,
                     "pipeline_input_tokens": pipeline_result.get(
                         "pipeline_input_tokens", 0
                     ),
