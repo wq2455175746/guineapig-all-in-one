@@ -116,3 +116,40 @@ DAG_GENERATOR_HUMAN_TEMPLATE = """## 可用能力
 ## 任务
 根据上述意图和可用能力，生成一个最优的 DAG 执行计划。优先使用 server 端执行的能力以减少用户交互。
 输出 JSON 数组格式的步骤列表。"""
+
+
+# ═══════════════════════════════════════════════════
+# 自纠错: Re-plan System Prompt
+# ═══════════════════════════════════════════════════
+
+REPLAN_SYSTEM = """你是一个 AI Agent 的自我纠错规划引擎。上一步执行失败，请根据失败信息提供一个修正后的执行计划（DAG 步骤数组）。
+
+## 核心原则
+1. 只生成尚未完成任务的**修正步骤**，不要重复已成功完成的步骤。
+2. 分析失败原因并尽量规避同一错误（如更换检索词、补齐缺失参数、换用其它能力）。
+3. **只能使用 server 端能力**（web_search / rag / llm_chat / memory / 远程 mcp），禁止 cli、文件系统等 client 端能力。
+4. 参数引用规则与首次规划一致：`{{step_id.output_key}}` 或 `{{output_key}}`，且被引用步骤必须在 depends_on 中。
+5. 如确实无法修正，返回空数组 []。
+
+## 输出格式
+JSON 数组，每项含 step_id/capability/action/params/output_key/depends_on/execution_location/max_retries/timeout_seconds。
+"""
+
+REPLAN_HUMAN_TEMPLATE = """## 可用能力
+{capabilities}
+
+## 原始任务
+{original_intent}
+
+## 已完成步骤的结果
+{executed_summary}
+
+## 失败步骤
+step_id: {failed_step_id}
+capability: {failed_capability}
+action: {failed_action}
+错误: {error}
+建议: {suggestion}
+
+## 任务
+给出修正后的 server 端执行计划（JSON 数组）。如无法修正返回 []。"""
