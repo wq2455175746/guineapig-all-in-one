@@ -21,6 +21,8 @@ from app.services.rag_retrieval_service import retrieve_rag_context
 from app.services.handle_llmservice import get_llm_response
 from app.services.langfuse_client import get_langfuse, is_langfuse_enabled
 
+from .errors import error_result, exception_result
+
 
 class CapabilityHandlers:
     """Server 端能力处理器 — 统一接口: handle(step_params: dict) -> dict"""
@@ -37,10 +39,20 @@ class CapabilityHandlers:
         max_results = int(params.get("max_results", params.get("maxResults", 5)))
 
         if not query:
-            return {"error": "搜索关键词为空", "result": ""}
+            return error_result(
+                "联网搜索失败：搜索关键词为空",
+                error_type="validation",
+                suggestion="请在 params 中提供非空 query",
+                capability="web_search",
+            )
 
         if not settings.SEARXNG_URL:
-            return {"error": "SearXNG 未配置", "result": ""}
+            return error_result(
+                "联网搜索失败：SearXNG 未配置",
+                error_type="config",
+                suggestion="设置环境变量 SEARXNG_URL",
+                capability="web_search",
+            )
 
         url = f"{settings.SEARXNG_URL}/search"
         try:
@@ -72,10 +84,15 @@ class CapabilityHandlers:
 
         except httpx.TimeoutException:
             logger.warning(f"[Handler] Web search timeout: query={query}")
-            return {"error": "联网搜索超时", "result": ""}
+            return error_result(
+                f"联网搜索超时（15s）：query={query}",
+                error_type="timeout",
+                suggestion="缩小关键词范围或稍后重试",
+                capability="web_search",
+            )
         except Exception as e:
             logger.error(f"[Handler] Web search failed: {e}")
-            return {"error": f"联网搜索失败: {e}", "result": ""}
+            return exception_result(e, capability="web_search", context="联网搜索失败")
 
     # ── RAG ──
 
@@ -86,10 +103,20 @@ class CapabilityHandlers:
         rag_names = params.get("rag_names", params.get("collection_names", []))
 
         if not query:
-            return {"error": "检索关键词为空", "result": ""}
+            return error_result(
+                "知识库检索失败：检索关键词为空",
+                error_type="validation",
+                suggestion="请在 params 中提供非空 query",
+                capability="rag",
+            )
 
         if not rag_names:
-            return {"error": "未指定知识库名称", "result": ""}
+            return error_result(
+                "知识库检索失败：未指定知识库名称",
+                error_type="validation",
+                suggestion="请在 params.rag_names 中提供知识库名称",
+                capability="rag",
+            )
 
         try:
             # 同步调用包装为 async（内部 embedding/检索/重排均放入线程池）
@@ -113,7 +140,7 @@ class CapabilityHandlers:
 
         except Exception as e:
             logger.error(f"[Handler] RAG search failed: {e}")
-            return {"error": f"知识库检索失败: {e}", "result": ""}
+            return exception_result(e, capability="rag", context="知识库检索失败")
 
     # ── LLM Chat ──
 
@@ -124,7 +151,12 @@ class CapabilityHandlers:
         system_prompt = params.get("system_prompt", "")
 
         if not prompt:
-            return {"error": "提示词为空", "result": ""}
+            return error_result(
+                "LLM 对话失败：提示词为空",
+                error_type="validation",
+                suggestion="请在 params 中提供 prompt/text/query 之一",
+                capability="llm_chat",
+            )
 
         try:
             # 构建带 system prompt 的消息
@@ -181,7 +213,7 @@ class CapabilityHandlers:
 
         except Exception as e:
             logger.error(f"[Handler] LLM chat failed: {e}")
-            return {"error": f"LLM 对话失败: {e}", "result": ""}
+            return exception_result(e, capability="llm_chat", context="LLM 对话失败")
 
     # ── Memory Retrieve ──
 
@@ -192,10 +224,20 @@ class CapabilityHandlers:
         user_id = params.get("user_id", 0)
 
         if not query:
-            return {"error": "记忆检索关键词为空", "result": ""}
+            return error_result(
+                "记忆检索失败：检索关键词为空",
+                error_type="validation",
+                suggestion="请在 params 中提供非空 query",
+                capability="memory_retrieve",
+            )
 
         if not settings.BACKEND_BASE_URL:
-            return {"error": "Backend URL 未配置", "result": ""}
+            return error_result(
+                "记忆检索失败：Backend URL 未配置",
+                error_type="config",
+                suggestion="设置环境变量 BACKEND_BASE_URL",
+                capability="memory_retrieve",
+            )
 
         try:
             url = f"{settings.BACKEND_BASE_URL}/api/v1/memory/search"
@@ -225,12 +267,19 @@ class CapabilityHandlers:
             return {"result": "\n".join(lines), "count": len(memories)}
 
         except httpx.TimeoutException:
-            return {"error": "记忆检索超时", "result": ""}
+            return error_result(
+                "记忆检索超时（10s）",
+                error_type="timeout",
+                suggestion="稍后重试",
+                capability="memory_retrieve",
+            )
         except Exception as e:
             logger.warning(
                 f"[Handler] Memory retrieve failed (may not be implemented): {e}"
             )
-            return {"error": f"记忆检索失败: {e}", "result": ""}
+            return exception_result(
+                e, capability="memory_retrieve", context="记忆检索失败"
+            )
 
     # ── Memory Summarize ──
 
@@ -241,10 +290,20 @@ class CapabilityHandlers:
         user_id = params.get("user_id", 0)
 
         if not content:
-            return {"error": "总结内容为空", "result": ""}
+            return error_result(
+                "记忆总结失败：内容为空",
+                error_type="validation",
+                suggestion="请在 params 中提供非空 content",
+                capability="memory_summarize",
+            )
 
         if not settings.BACKEND_BASE_URL:
-            return {"error": "Backend URL 未配置", "result": ""}
+            return error_result(
+                "记忆总结失败：Backend URL 未配置",
+                error_type="config",
+                suggestion="设置环境变量 BACKEND_BASE_URL",
+                capability="memory_summarize",
+            )
 
         try:
             url = f"{settings.BACKEND_BASE_URL}/api/v1/memory/summarize"
@@ -266,10 +325,17 @@ class CapabilityHandlers:
             }
 
         except httpx.TimeoutException:
-            return {"error": "记忆总结超时", "result": ""}
+            return error_result(
+                "记忆总结超时（30s）",
+                error_type="timeout",
+                suggestion="稍后重试",
+                capability="memory_summarize",
+            )
         except Exception as e:
             logger.warning(f"[Handler] Memory summarize failed: {e}")
-            return {"error": f"记忆总结失败: {e}", "result": ""}
+            return exception_result(
+                e, capability="memory_summarize", context="记忆总结失败"
+            )
 
     # ── MCP Server (sse/streamable_http) ──
 
@@ -291,10 +357,20 @@ class CapabilityHandlers:
         )
 
         if not tool_name:
-            return {"error": "MCP 工具名称为空", "result": ""}
+            return error_result(
+                "MCP 调用失败：工具名称为空",
+                error_type="validation",
+                suggestion="请在 params.tool 指定工具名",
+                capability=server_name or "mcp",
+            )
 
         if not mcp_url:
-            return {"error": "MCP server URL 未提供", "result": ""}
+            return error_result(
+                "MCP 调用失败：server URL 未提供",
+                error_type="config",
+                suggestion="检查该 MCP server 的连接配置",
+                capability=server_name or "mcp",
+            )
 
         try:
             if transport_type == "sse":
@@ -349,7 +425,11 @@ class CapabilityHandlers:
                 f"[Handler] MCP call failed: server={server_name}, tool={tool_name}, "
                 f"transport={transport_type}, err={e}"
             )
-            return {"error": f"MCP 调用失败: {e}", "result": ""}
+            return exception_result(
+                e,
+                capability=server_name or "mcp",
+                context=f"MCP 调用失败 tool={tool_name}",
+            )
 
     # ── 通用分发 ──
 
@@ -396,6 +476,11 @@ class CapabilityHandlers:
 
         handler = handler_map.get(capability)
         if handler is None:
-            return {"error": f"未知能力: {capability}", "result": ""}
+            return error_result(
+                f"未知能力：{capability}",
+                error_type="unknown_capability",
+                suggestion="确认 capability 是否在当前能力清单中",
+                capability=capability,
+            )
 
         return await handler(params)

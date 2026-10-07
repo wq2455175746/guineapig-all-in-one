@@ -11,6 +11,7 @@ from app.agent.executor.errors import (
     error_result,
     exception_result,
 )
+from app.agent.executor.handlers import CapabilityHandlers
 
 
 @pytest.fixture
@@ -76,3 +77,25 @@ def test_step_failure_defaults():
     assert f.error_type == "unknown"
     assert f.suggestion == ""
     assert f.params == {}
+
+
+@pytest.mark.asyncio
+async def test_web_search_missing_query_specific_error():
+    r = await CapabilityHandlers.handle_web_search({"query": ""})
+    assert r["error_type"] == "validation"
+    assert "关键词" in r["error"]
+    assert r["error_suggestion"]
+
+
+@pytest.mark.asyncio
+async def test_rag_missing_names_specific_error():
+    r = await CapabilityHandlers.handle_rag({"query": "x", "rag_names": []})
+    assert r["error_type"] == "validation"
+    assert "知识库" in r["error"]
+
+
+@pytest.mark.asyncio
+async def test_unknown_capability_specific_error():
+    r = await CapabilityHandlers.execute("totally_unknown", {})
+    assert r["error_type"] == "unknown_capability"
+    assert "totally_unknown" in r["error"]
