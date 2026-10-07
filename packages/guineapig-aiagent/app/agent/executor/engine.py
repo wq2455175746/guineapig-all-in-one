@@ -161,35 +161,34 @@ class DAGExecutionEngine:
         # 4. 执行（支持有界自纠错 re-plan）
         pending = list(sorted_steps)
         replan_round = 0
-        completed = 0
+        carried: list[StepFailure] = []
 
         while pending:
             self.failed_steps = []
             async for event in self._execute_batch(pending, inventory):
                 yield event
-            completed += sum(
-                1
-                for s in pending
-                if "error" not in (self.step_results.get(s.step_id) or {})
-            )
 
-            if not self.failed_steps:
+            bad = list(self.failed_steps)
+            unresolved = carried + bad
+
+            if not unresolved:
                 break
             if not self._can_replan(session_id, replan_round):
+                carried = unresolved
                 break
 
             replan_round += 1
-            failed = self.failed_steps[0]
+            target = unresolved[0]
             logger.warning(
                 f"[Engine] 步骤失败，进入自纠错: "
-                f"{failed.step_id}/{failed.capability}: {failed.error[:120]}"
+                f"{target.step_id}/{target.capability}: {target.error[:120]}"
             )
             yield self._event(
                 StreamEventType.REPLAN_STARTED,
                 {
                     "round": replan_round,
-                    "failed_step": failed.step_id,
-                    "error": failed.error[:200],
+                    "failed_step": target.step_id,
+                    "error": target.error[:200],
                 },
             )
             corrective = await asyncio.to_thread(
@@ -198,13 +197,14 @@ class DAGExecutionEngine:
                 capability_inventory=inventory,
                 capabilities_formatted=self.context.get("capabilities_formatted", ""),
                 step_results=self.step_results,
-                failed=failed,
+                failed=target,
                 trace_id=self.context.get("trace_id"),
             )
             if not corrective:
                 yield self._event(
                     StreamEventType.REPLAN_FAILED, {"round": replan_round}
                 )
+                carried = unresolved
                 break
 
             yield self._event(
@@ -214,9 +214,16 @@ class DAGExecutionEngine:
                     "steps": [self._step_summary(s) for s in corrective],
                 },
             )
+            carried = unresolved[1:]
             pending = corrective
 
-        failed = bool(self.failed_steps)
+        failed = bool(carried) or bool(self.failed_steps)
+        completed = sum(
+            1
+            for s in sorted_steps
+            if s.step_id in self.step_results
+            and "error" not in (self.step_results.get(s.step_id) or {})
+        )
 
         # 5. 执行完成
         total_duration = self._elapsed_ms()
@@ -588,6 +595,9 @@ class DAGExecutionEngine:
         """执行一批步骤，记录终态失败（供 re-plan 决策）。"""
         for step in steps:
             if not self._dependencies_resolved(step):
+                logger.warning(
+                    f"[Engine] Step {step.step_id} 前置依赖未完成/失败，跳过"
+                )
                 yield self._event(
                     StreamEventType.STEP_FAILED,
                     {

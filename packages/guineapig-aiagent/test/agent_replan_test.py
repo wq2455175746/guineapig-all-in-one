@@ -4,15 +4,21 @@ import json
 
 import pytest
 
+from app.agent.executor import engine as engine_mod
+from app.agent.executor import handlers as handlers_mod
+from app.agent.executor.engine import DAGExecutionEngine
 from app.agent.executor.errors import StepFailure
 from app.agent.executor.replanner import Replanner
 from app.agent.models import (
     CapabilityInfo,
     CapabilityInventory,
     CapabilityType,
+    DAGDefinition,
     DAGStep,
     ExecutionLocation,
+    StreamEventType,
 )
+from app.config import settings
 
 
 def _inventory():
@@ -109,14 +115,6 @@ def test_replan_settings_defaults():
     assert settings.AGENT_REPLAN_MAX == 1
 
 
-from app.agent.executor.engine import DAGExecutionEngine
-from app.agent.executor import handlers as handlers_mod
-from app.agent.executor.replanner import Replanner
-from app.agent.executor import engine as engine_mod
-from app.agent.models import DAGDefinition, DAGStep, StreamEventType
-from app.config import settings
-
-
 @pytest.mark.asyncio
 async def test_engine_replans_after_failure(mocker):
     async def fake_execute(capability, params):
@@ -166,3 +164,65 @@ async def test_engine_no_replan_without_session(mocker):
     engine = DAGExecutionEngine(dag)
     _ = [e async for e in engine.execute()]
     replan.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_engine_carries_unresolved_failure_across_replan(mocker):
+    async def fake_execute(capability, params):
+        if capability == "web_search":
+            return {"error": "超时", "error_type": "timeout", "result": ""}
+        return {"result": "修正后的答案", "char_count": 6}
+
+    mocker.patch.object(handlers_mod.CapabilityHandlers, "execute", side_effect=fake_execute)
+    mocker.patch.object(
+        engine_mod.Replanner,
+        "replan",
+        return_value=[DAGStep(step_id="r1", capability="llm_chat", action="answer", params={"prompt": "p"})],
+    )
+    mocker.patch.object(settings, "AGENT_REPLAN_ENABLED", True)
+    mocker.patch.object(settings, "AGENT_REPLAN_MAX", 1)
+
+    dag = DAGDefinition(
+        steps=[
+            DAGStep(step_id="s1", capability="web_search", action="a", max_retries=0),
+            DAGStep(step_id="s2", capability="web_search", action="b", max_retries=0),
+        ],
+        original_intent="t",
+    )
+    engine = DAGExecutionEngine(dag, context={"session_id": "conv_1"})
+    events = [e async for e in engine.execute(session_id="conv_1")]
+    complete = [e for e in events if e.event == StreamEventType.EXECUTION_COMPLETE.value][-1]
+
+    assert complete.data["status"] == "completed_with_errors"
+    assert complete.data["replanned"] is True
+
+
+@pytest.mark.asyncio
+async def test_engine_completed_steps_never_exceed_total(mocker):
+    async def fake_execute(capability, params):
+        if capability == "web_search":
+            return {"error": "超时", "error_type": "timeout", "result": ""}
+        return {"result": "修正后的答案", "char_count": 6}
+
+    mocker.patch.object(handlers_mod.CapabilityHandlers, "execute", side_effect=fake_execute)
+    mocker.patch.object(
+        engine_mod.Replanner,
+        "replan",
+        return_value=[
+            DAGStep(step_id="r1", capability="llm_chat", action="a", params={"prompt": "p"}),
+            DAGStep(step_id="r2", capability="llm_chat", action="b", params={"prompt": "p"}),
+        ],
+    )
+    mocker.patch.object(settings, "AGENT_REPLAN_ENABLED", True)
+    mocker.patch.object(settings, "AGENT_REPLAN_MAX", 1)
+
+    dag = DAGDefinition(
+        steps=[DAGStep(step_id="s1", capability="web_search", action="x", max_retries=0)],
+        original_intent="t",
+    )
+    engine = DAGExecutionEngine(dag, context={"session_id": "conv_1"})
+    events = [e async for e in engine.execute(session_id="conv_1")]
+    complete = [e for e in events if e.event == StreamEventType.EXECUTION_COMPLETE.value][-1]
+
+    assert complete.data["completed_steps"] <= complete.data["total_steps"]
+    assert complete.data["completed_steps"] == 0
