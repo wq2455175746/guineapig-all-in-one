@@ -77,6 +77,10 @@ class Settings(BaseSettings):
     LLM_RETRY_ATTEMPTS: int = 2
     LLM_RETRY_BACKOFF: float = 1.0
 
+    # DAG 自纠错：步骤终态失败后，回喂错误给 re-planner 生成修正步骤（仅 server 端）
+    AGENT_REPLAN_ENABLED: bool = False
+    AGENT_REPLAN_MAX: int = 1
+
     # 网络搜索配置
     SEARXNG_URL: str = "http://localhost:8484"
 

@@ -213,6 +213,9 @@ class StreamEventType(str, Enum):
     EXECUTION_COMPLETE = "execution_complete"  # 全部执行完成
     ERROR = "error"  # 致命错误
     LOG = "log"  # 日志消息
+    REPLAN_STARTED = "replan_started"  # 步骤失败，触发自纠错
+    REPLAN_GENERATED = "replan_generated"  # 已生成修正计划
+    REPLAN_FAILED = "replan_failed"  # 自纠错未能产出修正计划
 
 
 class StreamEvent(BaseModel):

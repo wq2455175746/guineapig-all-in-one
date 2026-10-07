@@ -92,3 +92,18 @@ def test_replan_returns_empty_on_invalid_plan(mocker):
         failed=StepFailure("s1", "web_search", "x", "err"),
     )
     assert steps == []
+
+
+def test_replan_event_types_exist():
+    from app.agent.models import StreamEventType
+
+    assert StreamEventType.REPLAN_STARTED.value == "replan_started"
+    assert StreamEventType.REPLAN_GENERATED.value == "replan_generated"
+    assert StreamEventType.REPLAN_FAILED.value == "replan_failed"
+
+
+def test_replan_settings_defaults():
+    from app.config import settings
+
+    assert settings.AGENT_REPLAN_ENABLED is False
+    assert settings.AGENT_REPLAN_MAX == 1
