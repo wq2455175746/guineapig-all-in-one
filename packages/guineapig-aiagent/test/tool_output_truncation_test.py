@@ -125,3 +125,11 @@ class TestToolResultIntegration:
         result = {"result": {"nested": 1}}
         out = truncate_tool_result(result, "rag", enabled=True, max_lines=10, max_bytes=10)
         assert out is result
+
+
+def test_truncation_settings_defaults():
+    from app.config import settings
+
+    assert settings.AGENT_TOOL_OUTPUT_TRUNCATION_ENABLED is True
+    assert settings.AGENT_TOOL_OUTPUT_MAX_LINES == 2000
+    assert settings.AGENT_TOOL_OUTPUT_MAX_BYTES == 51200

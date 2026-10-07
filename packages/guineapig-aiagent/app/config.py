@@ -81,6 +81,11 @@ class Settings(BaseSettings):
     AGENT_REPLAN_ENABLED: bool = False
     AGENT_REPLAN_MAX: int = 1
 
+    # DAG 工具输出截断：防止单条超大结果撑爆后续 LLM 上下文
+    AGENT_TOOL_OUTPUT_TRUNCATION_ENABLED: bool = True
+    AGENT_TOOL_OUTPUT_MAX_LINES: int = 2000
+    AGENT_TOOL_OUTPUT_MAX_BYTES: int = 51200  # 50KB
+
     # 网络搜索配置
     SEARXNG_URL: str = "http://localhost:8484"
 
