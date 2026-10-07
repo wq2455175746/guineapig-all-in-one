@@ -36,7 +36,6 @@ from .middleware import (
 )
 from .errors import StepFailure, exception_result
 from .replanner import Replanner
-from .truncate import truncate_tool_result
 from ..event_manager import AgentEventManager
 
 
@@ -328,16 +327,6 @@ class DAGExecutionEngine:
 
     # ── 步骤执行 ──
 
-    @staticmethod
-    def _truncate_result(result: dict, capability: str) -> dict:
-        return truncate_tool_result(
-            result,
-            capability,
-            enabled=settings.AGENT_TOOL_OUTPUT_TRUNCATION_ENABLED,
-            max_lines=settings.AGENT_TOOL_OUTPUT_MAX_LINES,
-            max_bytes=settings.AGENT_TOOL_OUTPUT_MAX_BYTES,
-        )
-
     async def _execute_step(
         self,
         step: DAGStep,
@@ -446,9 +435,6 @@ class DAGExecutionEngine:
                     transformed = await self._runner.after_step(ctx)
                     result_data = (
                         transformed if transformed is not None else ctx.result
-                    )
-                    result_data = self._truncate_result(
-                        result_data, step.capability
                     )
                     self.step_results[step.step_id] = result_data
                     entry.status = "completed"
@@ -576,7 +562,6 @@ class DAGExecutionEngine:
             transformed = await self._runner.after_step(ctx)
             if transformed is not None:
                 result = transformed
-            result = self._truncate_result(result, step.capability)
             self.step_results[step.step_id] = result
             entry.status = "completed"
             entry.completed_at = step_end

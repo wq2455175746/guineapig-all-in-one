@@ -134,10 +134,31 @@ class UnresolvedRefGuardMiddleware(StepMiddleware):
         return None
 
 
+class ToolOutputTruncationMiddleware(StepMiddleware):
+    """输出截断 — 防止单条超大结果撑爆后续 LLM 上下文。"""
+
+    name = "tool_output_truncation"
+
+    async def after_step(self, ctx: StepContext) -> Optional[dict]:
+        from app.config import settings
+        from .truncate import truncate_tool_result
+
+        if ctx.result is None:
+            return None
+        return truncate_tool_result(
+            ctx.result,
+            ctx.step.capability,
+            enabled=settings.AGENT_TOOL_OUTPUT_TRUNCATION_ENABLED,
+            max_lines=settings.AGENT_TOOL_OUTPUT_MAX_LINES,
+            max_bytes=settings.AGENT_TOOL_OUTPUT_MAX_BYTES,
+        )
+
+
 def default_middlewares() -> list[StepMiddleware]:
     """内核默认叠加层 — 复现重构前的参数解析/注入/校验行为。"""
     return [
         ParamResolutionMiddleware(),
         McpConnectionMiddleware(),
         UnresolvedRefGuardMiddleware(),
+        ToolOutputTruncationMiddleware(),
     ]
