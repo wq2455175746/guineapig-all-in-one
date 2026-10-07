@@ -71,10 +71,6 @@ class TestRunner:
 class TestDefaultMiddlewares:
     @pytest.mark.asyncio
     async def test_param_resolution_uses_resolver(self):
-        class Resolver:
-            async def before_step(self, ctx):
-                return None
-
         runner = MiddlewareRunner(default_middlewares())
         ctx = StepContext(
             step=_step(),
@@ -198,3 +194,118 @@ async def test_on_step_error_observes_failure(mocker):
     engine = DAGExecutionEngine(dag, middlewares=[Observer()])
     _ = [e async for e in engine.execute()]
     assert observed == [("s1", "boom")]
+
+
+@pytest.mark.asyncio
+async def test_blocked_step_triggers_on_step_error():
+    """被中间件拦截的步骤属终态失败，应先于 STEP_FAILED 通知 on_step_error。"""
+    observed = []
+    order = []
+
+    class Observer(StepMiddleware):
+        name = "observer"
+
+        async def on_step_error(self, ctx):
+            observed.append((ctx.step.step_id, ctx.error, ctx.error_type))
+            order.append("error")
+
+    dag = DAGDefinition(
+        steps=[DAGStep(step_id="s1", capability="cli", action="x", max_retries=0)],
+        original_intent="t",
+    )
+    engine = DAGExecutionEngine(dag, middlewares=[_BlockDelete(), Observer()])
+    async for e in engine.execute():
+        if e.event == StreamEventType.STEP_FAILED.value:
+            order.append("failed")
+
+    assert observed == [("s1", "禁止执行 CLI", "unresolved_ref")]
+    assert order == ["error", "failed"]
+
+
+@pytest.mark.asyncio
+async def test_guard_legacy_message_server():
+    """server 步骤未解析占位符时保留旧消息文案（无法执行）。"""
+    dag = DAGDefinition(
+        steps=[
+            DAGStep(
+                step_id="s1",
+                capability="llm_chat",
+                action="x",
+                params={"prompt": "{{missing.ref}}"},
+            )
+        ],
+        original_intent="t",
+    )
+    engine = DAGExecutionEngine(dag)
+    events = [e async for e in engine.execute()]
+    failed = [e for e in events if e.event == StreamEventType.STEP_FAILED.value]
+    assert failed
+    assert "无法执行" in failed[0].data["error"]
+    assert "无法下发" not in failed[0].data["error"]
+
+
+@pytest.mark.asyncio
+async def test_guard_legacy_message_client():
+    """client 步骤未解析占位符时保留旧消息文案（无法下发 client 执行）。"""
+    dag = DAGDefinition(
+        steps=[
+            DAGStep(
+                step_id="s1",
+                capability="cli",
+                action="x",
+                execution_location=ExecutionLocation.CLIENT,
+                params={"command": "echo {{missing.ref}}"},
+            )
+        ],
+        original_intent="t",
+    )
+    engine = DAGExecutionEngine(dag)
+    events = [e async for e in engine.execute()]
+    failed = [e for e in events if e.event == StreamEventType.STEP_FAILED.value]
+    assert failed
+    assert "无法下发 client 执行" in failed[0].data["error"]
+
+
+@pytest.mark.asyncio
+async def test_client_delegate_failure_triggers_on_step_error(mocker):
+    """client 委托失败应先于 STEP_FAILED 以 error_type=client_error 通知观察者。"""
+    from app.agent.event_manager import AgentEventManager
+
+    observed = []
+    order = []
+
+    class Observer(StepMiddleware):
+        name = "observer"
+
+        async def on_step_error(self, ctx):
+            observed.append((ctx.step.step_id, ctx.error, ctx.error_type))
+            order.append("error")
+
+    async def fake_wait(session_id, step_id, timeout=600):
+        return {"error": "boom"}
+
+    mocker.patch.object(
+        AgentEventManager, "wait_for_delegate", side_effect=fake_wait
+    )
+
+    dag = DAGDefinition(
+        steps=[
+            DAGStep(
+                step_id="s1",
+                capability="cli",
+                action="x",
+                execution_location=ExecutionLocation.CLIENT,
+                params={"command": "ls"},
+            )
+        ],
+        original_intent="t",
+    )
+    engine = DAGExecutionEngine(
+        dag, middlewares=[Observer()], context={"session_id": "conv_1"}
+    )
+    async for e in engine.execute():
+        if e.event == StreamEventType.STEP_FAILED.value:
+            order.append("failed")
+
+    assert observed == [("s1", "boom", "client_error")]
+    assert order == ["error", "failed"]

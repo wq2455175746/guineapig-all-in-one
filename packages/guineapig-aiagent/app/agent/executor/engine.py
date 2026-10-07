@@ -384,6 +384,9 @@ class DAGExecutionEngine:
             logger.warning(
                 f"[Engine] Step {step.step_id} 被中间件拦截: {blocked.reason}"
             )
+            ctx.error = blocked.reason
+            ctx.error_type = "unresolved_ref"
+            await self._runner.on_step_error(ctx)
             yield self._event(
                 StreamEventType.STEP_FAILED,
                 {
@@ -487,6 +490,10 @@ class DAGExecutionEngine:
                     logger.error(
                         f"[Engine] Client step {step.step_id} failed: {err_msg}"
                     )
+                    ctx.error = err_msg
+                    ctx.error_type = "client_error"
+                    await self._runner.on_step_error(ctx)
+
                     yield self._event(
                         StreamEventType.STEP_FAILED,
                         {
@@ -499,10 +506,6 @@ class DAGExecutionEngine:
 
                     # 保存错误结果以便依赖检查
                     self.step_results[step.step_id] = {"error": err_msg}
-
-                    ctx.error = err_msg
-                    ctx.error_type = "client_error"
-                    await self._runner.on_step_error(ctx)
             return
 
         # 执行（带重试）
@@ -780,16 +783,6 @@ class DAGExecutionEngine:
         return True
 
     # ── 数据流 ──
-
-    def _inject_mcp_conn_params(self, params: dict, capability: str) -> dict:
-        """为 MCP 步骤注入连接信息（含 stdio command/args/env），供 client 端执行。"""
-        if not capability.startswith("mcp_"):
-            return dict(params)
-        resolved = self._resolve_params(params)
-        matched_srv = self._match_mcp_server(capability)
-        if matched_srv is not None:
-            resolved = self._inject_conn_params(resolved, matched_srv)
-        return resolved
 
     @staticmethod
     def _inject_conn_params(params: dict, matched_srv) -> dict:

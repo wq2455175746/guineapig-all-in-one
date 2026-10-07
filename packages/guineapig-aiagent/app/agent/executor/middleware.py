@@ -103,7 +103,10 @@ class ParamResolutionMiddleware(StepMiddleware):
 
 
 class McpConnectionMiddleware(StepMiddleware):
-    """为 MCP 步骤注入连接信息（URL/transport/headers/stdio 启动参数）。"""
+    """为 MCP 步骤注入连接信息（URL/transport/headers/stdio 启动参数）。
+
+    必须排在 ParamResolutionMiddleware 之后：它消费 ctx.resolved_params。
+    """
 
     name = "mcp_connection"
 
@@ -123,14 +126,17 @@ class UnresolvedRefGuardMiddleware(StepMiddleware):
 
     async def before_step(self, ctx: StepContext) -> Optional[BlockResult]:
         if ctx.unresolved_checker is not None and ctx.unresolved_checker(ctx.resolved_params):
-            loc = ctx.step.execution_location.value
-            return BlockResult(
-                block=True,
-                reason=(
-                    f"参数包含未解析的占位符，无法下发 {loc} 执行: "
+            if ctx.step.execution_location == ExecutionLocation.CLIENT:
+                reason = (
+                    f"参数包含未解析的占位符，无法下发 client 执行: "
                     f"params={ctx.resolved_params}"
-                ),
-            )
+                )
+            else:
+                reason = (
+                    f"参数包含未解析的占位符，无法执行: "
+                    f"params={ctx.resolved_params}"
+                )
+            return BlockResult(block=True, reason=reason)
         return None
 
 

@@ -148,7 +148,7 @@ class TestResolveParams:
             "result": "# 广州三日游计划\nDay1...", "char_count": 20,
         }
 
-        # 与 engine._execute_step 的 client 路径一致：经 _inject_mcp_conn_params 走 _resolve_params
+        # 与 engine._execute_step 的 client 路径一致：经 _resolve_params 解析引用
         resolved = engine._resolve_params(dag.steps[2].params)
         args = resolved["arguments"]
         assert args["content"] == "# 广州三日游计划\nDay1..."
@@ -369,8 +369,8 @@ class TestStreamEvents:
     async def test_non_mcp_client_step_resolves_ref(self, monkeypatch):
         """回归：非 MCP 的 CLIENT 步骤含可解析 {{ref}} 时应解析后下发。
 
-        旧逻辑对非 MCP client 步骤调用 _inject_mcp_conn_params，其直接返回
-        dict(params) 而不解析引用，导致可解析的 {{s1.result}} 被误判为未解析而失败。
+        旧逻辑对非 MCP client 步骤不解析引用（直接返回 dict(params)），
+        导致可解析的 {{s1.result}} 被误判为未解析而失败。
         新流程由 ParamResolutionMiddleware 无条件解析，client 应收到解析后的参数。
         """
         from app.agent.executor import handlers as handlers_module
