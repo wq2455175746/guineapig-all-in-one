@@ -28,6 +28,7 @@ from ..models import (
     TimelineLog,
 )
 from .handlers import CapabilityHandlers
+from .errors import StepFailure, exception_result
 from ..event_manager import AgentEventManager
 
 
@@ -50,6 +51,7 @@ class DAGExecutionEngine:
         self.dag = dag
         self.context = context or {}
         self.step_results: dict[str, dict] = {}  # step_id → execution result
+        self.failed_steps: list[StepFailure] = []
         self.timeline: list[TimelineEntry] = []
         self._started_at = ""
 
@@ -443,6 +445,8 @@ class DAGExecutionEngine:
         # 执行（带重试）
         result = None
         last_error = ""
+        last_error_type = "unknown"
+        last_error_suggestion = ""
         for attempt in range(max(1, step.max_retries + 1)):
             if attempt > 0:
                 logger.info(
@@ -472,14 +476,21 @@ class DAGExecutionEngine:
                 )
                 if "error" in result:
                     last_error = result["error"]
+                    last_error_type = result.get("error_type", "tool_error")
+                    last_error_suggestion = result.get("error_suggestion", "")
                     continue  # 重试
                 last_error = ""
                 break  # 成功
             except asyncio.TimeoutError:
                 last_error = f"执行超时 ({step.timeout_seconds}s)"
+                last_error_type = "timeout"
+                last_error_suggestion = "可提高 timeout_seconds 或稍后重试"
                 continue
             except Exception as e:
-                last_error = f"执行异常: {e}"
+                err = exception_result(e, capability=step.capability, context="执行异常")
+                last_error = err["error"]
+                last_error_type = err["error_type"]
+                last_error_suggestion = err["error_suggestion"]
                 continue
 
         step_end = datetime.now(timezone.utc).isoformat()
@@ -526,6 +537,13 @@ class DAGExecutionEngine:
             entry.duration_ms = self._elapsed_ms_since(step_start)
             entry.error = last_error
             self.timeline.append(entry)
+
+            self.step_results[step.step_id] = {
+                "error": last_error,
+                "error_type": last_error_type,
+                "error_suggestion": last_error_suggestion,
+                "result": "",
+            }
 
             logger.error(f"[Engine] Step {step.step_id} failed: {last_error}")
             yield self._event(

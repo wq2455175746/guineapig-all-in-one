@@ -5,6 +5,8 @@ import asyncio
 import pytest
 
 from app.core.log import logger as app_logger
+from app.agent.models import DAGDefinition, DAGStep
+from app.agent.executor.engine import DAGExecutionEngine
 from app.agent.executor.errors import (
     StepFailure,
     classify_exception,
@@ -12,6 +14,7 @@ from app.agent.executor.errors import (
     exception_result,
 )
 from app.agent.executor.handlers import CapabilityHandlers
+from app.agent.executor import handlers as handlers_mod
 
 
 @pytest.fixture
@@ -99,3 +102,23 @@ async def test_unknown_capability_specific_error():
     r = await CapabilityHandlers.execute("totally_unknown", {})
     assert r["error_type"] == "unknown_capability"
     assert "totally_unknown" in r["error"]
+
+
+@pytest.mark.asyncio
+async def test_server_exception_becomes_structured_error(mocker, captured_logs):
+    async def boom(capability, params):
+        raise ValueError("kaboom")
+
+    mocker.patch.object(handlers_mod.CapabilityHandlers, "execute", side_effect=boom)
+    dag = DAGDefinition(
+        steps=[DAGStep(step_id="s1", capability="web_search", action="x", max_retries=0)],
+        original_intent="t",
+    )
+    engine = DAGExecutionEngine(dag, context={"session_id": ""})
+    events = [e async for e in engine.execute()]
+
+    assert any(e.event == "step_failed" for e in events)
+    stored = engine.step_results["s1"]
+    assert stored["error_type"] == "unknown"
+    assert "kaboom" in stored["error"]
+    assert any("能力执行异常" in m for m in captured_logs)
