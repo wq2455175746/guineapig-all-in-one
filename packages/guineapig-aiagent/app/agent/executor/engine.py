@@ -29,6 +29,12 @@ from ..models import (
     TimelineLog,
 )
 from .handlers import CapabilityHandlers
+from .middleware import (
+    BlockResult,
+    MiddlewareRunner,
+    StepContext,
+    default_middlewares,
+)
 from .errors import StepFailure, exception_result
 from .replanner import Replanner
 from .truncate import truncate_tool_result
@@ -45,11 +51,17 @@ class DAGExecutionEngine:
     # 未解析占位符检测（解析后仍残留 {{...}} 即视为未解析）
     UNRESOLVED_REF_PATTERN = re.compile(r"\{\{.*?\}\}")
 
-    def __init__(self, dag: DAGDefinition, context: dict | None = None):
+    def __init__(
+        self,
+        dag: DAGDefinition,
+        context: dict | None = None,
+        middlewares=None,
+    ):
         """
         Args:
             dag: 待执行的 DAG
             context: 执行上下文（包含 user_id, session_id, 会话历史等）
+            middlewares: 步骤中间件列表（默认使用 default_middlewares()）
         """
         self.dag = dag
         self.context = context or {}
@@ -57,6 +69,9 @@ class DAGExecutionEngine:
         self.failed_steps: list[StepFailure] = []
         self.timeline: list[TimelineEntry] = []
         self._started_at = ""
+        self._runner = MiddlewareRunner(
+            middlewares if middlewares is not None else default_middlewares()
+        )
 
     # ── 公共接口 ──
 
@@ -355,29 +370,47 @@ class DAGExecutionEngine:
             },
         )
 
+        # 中间件前置钩子：解析参数、注入 MCP 连接、拦截未解析占位符
+        ctx = StepContext(
+            step=step,
+            params=dict(step.params),
+            inventory=inventory,
+            session_id=self.context.get("session_id", ""),
+            step_results=self.step_results,
+            context=self.context,
+            resolver=self._resolve_params,
+            unresolved_checker=self._has_unresolved_refs,
+            mcp_match=self._match_mcp_server,
+            mcp_inject=self._inject_conn_params,
+        )
+        blocked = await self._runner.before_step(ctx)
+        if blocked is not None:
+            entry.status = "failed"
+            entry.error = blocked.reason
+            self.timeline.append(entry)
+            self.step_results[step.step_id] = {
+                "error": blocked.reason,
+                "error_type": "unresolved_ref",
+                "result": "",
+            }
+            logger.warning(
+                f"[Engine] Step {step.step_id} 被中间件拦截: {blocked.reason}"
+            )
+            yield self._event(
+                StreamEventType.STEP_FAILED,
+                {
+                    "step_id": step.step_id,
+                    "error": blocked.reason,
+                    "duration_ms": self._elapsed_ms_since(step_start),
+                    "step": self._step_summary(step),
+                },
+            )
+            return
+        resolved_params = ctx.resolved_params
+
         # Client 端能力 → 等待客户端执行
         if step.execution_location == ExecutionLocation.CLIENT:
-            # MCP 步骤：注入连接信息（含 stdio command/args/env），供 client 端执行
-            client_params = self._inject_mcp_conn_params(step.params, step.capability)
-            if self._has_unresolved_refs(client_params):
-                err_msg = (
-                    f"参数包含未解析的占位符，无法下发 client 执行: "
-                    f"params={client_params}"
-                )
-                logger.warning(f"[Engine] Step {step.step_id} {err_msg}")
-                entry.status = "failed"
-                entry.error = err_msg
-                self.timeline.append(entry)
-                yield self._event(
-                    StreamEventType.STEP_FAILED,
-                    {
-                        "step_id": step.step_id,
-                        "error": err_msg,
-                        "duration_ms": self._elapsed_ms_since(step_start),
-                        "step": self._step_summary(step),
-                    },
-                )
-                return
+            client_params = resolved_params
             logger.info(
                 f"[Engine] 下发 client 步骤 {step.step_id}: "
                 f"capability={step.capability}, action={step.action}, "
@@ -410,8 +443,13 @@ class DAGExecutionEngine:
                 step_end = datetime.now(timezone.utc).isoformat()
                 if delegate_result and not delegate_result.get("error"):
                     # 成功
+                    ctx.result = delegate_result.get("result", {}) or {}
+                    transformed = await self._runner.after_step(ctx)
+                    result_data = (
+                        transformed if transformed is not None else ctx.result
+                    )
                     result_data = self._truncate_result(
-                        delegate_result.get("result", {}) or {}, step.capability
+                        result_data, step.capability
                     )
                     self.step_results[step.step_id] = result_data
                     entry.status = "completed"
@@ -478,40 +516,6 @@ class DAGExecutionEngine:
                     self.step_results[step.step_id] = {"error": err_msg}
             return
 
-        # 解析参数中的引用
-        resolved_params = self._resolve_params(step.params)
-        logger.debug(
-            f"[Engine] Step {step.step_id} 解析参数: {resolved_params}"
-        )
-
-        # 参数含未解析占位符 → 标记失败，不执行（避免把占位符当真实数据用）
-        if self._has_unresolved_refs(resolved_params):
-            err_msg = (
-                f"参数包含未解析的占位符，无法执行: params={resolved_params}"
-            )
-            logger.warning(f"[Engine] Step {step.step_id} {err_msg}")
-            entry.status = "failed"
-            entry.error = err_msg
-            self.timeline.append(entry)
-            yield self._event(
-                StreamEventType.STEP_FAILED,
-                {
-                    "step_id": step.step_id,
-                    "error": err_msg,
-                    "duration_ms": self._elapsed_ms_since(step_start),
-                    "step": self._step_summary(step),
-                },
-            )
-            return
-
-        # 对 MCP 步骤，从 context 注入连接信息（URL、transport_type、headers、stdio 启动参数）
-        if step.capability.startswith("mcp_"):
-            matched_srv = self._match_mcp_server(step.capability)
-            if matched_srv is not None:
-                resolved_params = self._inject_conn_params(
-                    resolved_params, matched_srv
-                )
-
         # 执行（带重试）
         result = None
         last_error = ""
@@ -569,6 +573,10 @@ class DAGExecutionEngine:
 
         if result and "error" not in result:
             # 成功
+            ctx.result = result
+            transformed = await self._runner.after_step(ctx)
+            if transformed is not None:
+                result = transformed
             result = self._truncate_result(result, step.capability)
             self.step_results[step.step_id] = result
             entry.status = "completed"
