@@ -314,7 +314,8 @@ class DAGExecutionEngine:
 
     # ── 步骤执行 ──
 
-    def _truncate_result(self, result: dict, capability: str) -> dict:
+    @staticmethod
+    def _truncate_result(result: dict, capability: str) -> dict:
         return truncate_tool_result(
             result,
             capability,

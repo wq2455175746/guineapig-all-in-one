@@ -4,7 +4,7 @@ import pytest
 
 from app.agent.executor import handlers as handlers_mod
 from app.agent.executor.engine import DAGExecutionEngine
-from app.agent.models import DAGDefinition, DAGStep
+from app.agent.models import DAGDefinition, DAGStep, ExecutionLocation
 from app.agent.executor.truncate import (
     TruncationResult,
     truncate_head,
@@ -131,6 +131,24 @@ class TestToolResultIntegration:
         out = truncate_tool_result(result, "rag", enabled=True, max_lines=10, max_bytes=10)
         assert out is result
 
+    def test_stdout_truncated_and_other_fields_preserved(self):
+        result = {"stdout": "line\n" * 100000, "stderr": "", "exitCode": 0}
+        out = truncate_tool_result(
+            result, "cli", enabled=True, max_lines=10, max_bytes=10_000
+        )
+        assert out["truncated"] is True
+        assert "输出已截断" in out["stdout"]
+        assert out["exitCode"] == 0
+
+    def test_stderr_truncated_with_notice(self):
+        result = {"stderr": "err\n" * 100000, "exitCode": 1}
+        out = truncate_tool_result(
+            result, "cli", enabled=True, max_lines=10, max_bytes=10_000
+        )
+        assert out["truncated"] is True
+        assert "输出已截断" in out["stderr"]
+        assert out["exitCode"] == 1
+
 
 def test_truncation_settings_defaults():
     from app.config import settings
@@ -157,3 +175,32 @@ async def test_engine_truncates_huge_server_result(mocker):
     assert stored["truncated"] is True
     assert "输出已截断" in stored["result"]
     assert len(stored["result"]) < 100_000
+
+
+@pytest.mark.asyncio
+async def test_engine_truncates_client_delegate_result(mocker):
+    async def fake_wait_for_delegate(session_id, step_id, timeout=600):
+        return {"result": {"stdout": "line\n" * 100000, "exitCode": 0}, "error": ""}
+
+    mocker.patch(
+        "app.agent.event_manager.AgentEventManager.wait_for_delegate",
+        side_effect=fake_wait_for_delegate,
+    )
+    dag = DAGDefinition(
+        steps=[
+            DAGStep(
+                step_id="s1",
+                capability="cli",
+                action="x",
+                execution_location=ExecutionLocation.CLIENT,
+                max_retries=0,
+            )
+        ],
+        original_intent="t",
+    )
+    engine = DAGExecutionEngine(dag, context={"session_id": "conv_test"})
+    _ = [e async for e in engine.execute(session_id="conv_test")]
+
+    stored = engine.step_results["s1"]
+    assert stored["truncated"] is True
+    assert "输出已截断" in stored["stdout"]

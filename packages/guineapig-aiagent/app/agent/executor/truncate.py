@@ -223,28 +223,41 @@ def truncate_tool_result(
     max_lines: int = DEFAULT_MAX_LINES,
     max_bytes: int = DEFAULT_MAX_BYTES,
 ) -> dict:
-    """对 handle/委托结果的 `result` 文本字段做截断；非文本或未超限时原样返回。"""
+    """对 handle/委托结果中的文本字段做截断；非文本或未超限时原样返回。
+
+    ``result`` 字段按能力方向（head/tail）截断；客户端命令输出的 ``stdout`` /
+    ``stderr`` 按 tail 方向截断（错误信息通常在末尾）。两者都会被扫描，任一超限
+    即复制结果并打上 ``truncated`` 标记，其余字段原样保留。
+    """
     if not enabled or not isinstance(result, dict):
         return result
-    text = result.get("result")
-    if not isinstance(text, str) or not text:
-        return result
 
-    mode = truncation_mode(capability)
-    if mode == "head":
-        tr = truncate_head(text, max_lines=max_lines, max_bytes=max_bytes)
-    else:
-        tr = truncate_tail(text, max_lines=max_lines, max_bytes=max_bytes)
-
-    if not tr.truncated:
-        return result
-
-    new_result = dict(result)
-    new_result["result"] = tr.content + "\n\n" + build_notice(tr, mode)
-    new_result["truncated"] = True
-    logger.info(
-        f"[Truncate] capability={capability} mode={mode} 截断输出: "
-        f"{tr.output_bytes}/{tr.total_bytes} 字节, "
-        f"{tr.output_lines}/{tr.total_lines} 行"
+    field_modes = (
+        ("result", truncation_mode(capability)),
+        ("stdout", "tail"),
+        ("stderr", "tail"),
     )
-    return new_result
+
+    new_result: dict | None = None
+    for field, mode in field_modes:
+        text = result.get(field)
+        if not isinstance(text, str) or not text:
+            continue
+        if mode == "head":
+            tr = truncate_head(text, max_lines=max_lines, max_bytes=max_bytes)
+        else:
+            tr = truncate_tail(text, max_lines=max_lines, max_bytes=max_bytes)
+        if not tr.truncated:
+            continue
+
+        if new_result is None:
+            new_result = dict(result)
+        new_result[field] = tr.content + "\n\n" + build_notice(tr, mode)
+        new_result["truncated"] = True
+        logger.info(
+            f"[Truncate] capability={capability} field={field} mode={mode} 截断输出: "
+            f"{tr.output_bytes}/{tr.total_bytes} 字节, "
+            f"{tr.output_lines}/{tr.total_lines} 行"
+        )
+
+    return new_result if new_result is not None else result
