@@ -161,6 +161,7 @@ class DAGExecutionEngine:
         # 4. 执行（支持有界自纠错 re-plan）
         pending = list(sorted_steps)
         replan_round = 0
+        replan_generated = False
         carried: list[StepFailure] = []
 
         while pending:
@@ -191,15 +192,28 @@ class DAGExecutionEngine:
                     "error": target.error[:200],
                 },
             )
-            corrective = await asyncio.to_thread(
-                Replanner.replan,
-                original_intent=self.dag.original_intent,
-                capability_inventory=inventory,
-                capabilities_formatted=self.context.get("capabilities_formatted", ""),
-                step_results=self.step_results,
-                failed=target,
-                trace_id=self.context.get("trace_id"),
-            )
+            try:
+                corrective = await asyncio.to_thread(
+                    Replanner.replan,
+                    original_intent=self.dag.original_intent,
+                    capability_inventory=inventory,
+                    capabilities_formatted=self.context.get(
+                        "capabilities_formatted", ""
+                    ),
+                    step_results=self.step_results,
+                    failed=target,
+                    trace_id=self.context.get("trace_id"),
+                )
+            except Exception as e:
+                logger.opt(exception=e).error(
+                    f"[Engine] 自纠错调用异常，放弃本轮自纠错: {e}"
+                )
+                yield self._event(
+                    StreamEventType.REPLAN_FAILED, {"round": replan_round}
+                )
+                carried = unresolved
+                break
+
             if not corrective:
                 yield self._event(
                     StreamEventType.REPLAN_FAILED, {"round": replan_round}
@@ -207,15 +221,27 @@ class DAGExecutionEngine:
                 carried = unresolved
                 break
 
+            sorted_corrective = self._topological_sort_steps(corrective)
+            if sorted_corrective is None:
+                logger.error(
+                    "[Engine] 修正计划存在循环依赖或不可解析依赖，放弃本轮自纠错"
+                )
+                yield self._event(
+                    StreamEventType.REPLAN_FAILED, {"round": replan_round}
+                )
+                carried = unresolved
+                break
+
+            replan_generated = True
             yield self._event(
                 StreamEventType.REPLAN_GENERATED,
                 {
                     "round": replan_round,
-                    "steps": [self._step_summary(s) for s in corrective],
+                    "steps": [self._step_summary(s) for s in sorted_corrective],
                 },
             )
             carried = unresolved[1:]
-            pending = corrective
+            pending = sorted_corrective
 
         failed = bool(carried) or bool(self.failed_steps)
         completed = sum(
@@ -235,7 +261,7 @@ class DAGExecutionEngine:
                 "completed_steps": completed,
                 "duration_ms": total_duration,
                 "timeline": [t.model_dump() for t in self.timeline],
-                "replanned": replan_round > 0,
+                "replanned": replan_generated,
                 "summary": {
                     "original_intent": self.dag.original_intent,
                     "steps_completed": completed,
@@ -511,6 +537,8 @@ class DAGExecutionEngine:
                     last_error_suggestion = result.get("error_suggestion", "")
                     continue  # 重试
                 last_error = ""
+                last_error_type = "unknown"
+                last_error_suggestion = ""
                 break  # 成功
             except asyncio.TimeoutError:
                 last_error = f"执行超时 ({step.timeout_seconds}s)"
@@ -613,6 +641,7 @@ class DAGExecutionEngine:
                         step.action,
                         "前置步骤未完成或已失败",
                         "dependency",
+                        params=dict(step.params),
                     )
                 )
                 break
@@ -683,17 +712,26 @@ class DAGExecutionEngine:
     # ── 拓扑排序 ──
 
     def _topological_sort(self) -> list[DAGStep] | None:
-        """Kahn 拓扑排序"""
-        step_map = {s.step_id: s for s in self.dag.steps}
+        """Kahn 拓扑排序（当前 DAG）"""
+        return self._topological_sort_steps(self.dag.steps)
+
+    def _topological_sort_steps(
+        self, steps: list[DAGStep]
+    ) -> list[DAGStep] | None:
+        """对给定步骤列表做 Kahn 拓扑排序。
+
+        返回 None 表示存在循环依赖，或有依赖无法在给定集合内解析。
+        """
+        step_map = {s.step_id: s for s in steps}
 
         # 入度
-        indegree: dict[str, int] = {s.step_id: 0 for s in self.dag.steps}
-        for s in self.dag.steps:
+        indegree: dict[str, int] = {s.step_id: 0 for s in steps}
+        for s in steps:
             indegree[s.step_id] = len(s.depends_on)
 
         # 反向邻接表: 依赖 dep_id 的步骤列表
-        dependents: dict[str, list[str]] = {s.step_id: [] for s in self.dag.steps}
-        for s in self.dag.steps:
+        dependents: dict[str, list[str]] = {s.step_id: [] for s in steps}
+        for s in steps:
             for dep_id in s.depends_on:
                 if dep_id in dependents:
                     dependents[dep_id].append(s.step_id)
@@ -710,7 +748,7 @@ class DAGExecutionEngine:
                 if indegree[dependent] == 0:
                     queue.append(dependent)
 
-        if len(sorted_ids) != len(self.dag.steps):
+        if len(sorted_ids) != len(steps):
             return None  # 存在循环
 
         return [step_map[sid] for sid in sorted_ids]

@@ -57,6 +57,10 @@ def classify_exception(exc: BaseException) -> str:
     """把异常归类到 error_type，用于错误分层与 re-plan 决策。"""
     try:
         import httpx
+    except Exception:  # pragma: no cover - 依赖缺失时退化为 unknown
+        httpx = None
+
+    try:
         from openai import (
             APIConnectionError,
             APITimeoutError,
@@ -64,7 +68,6 @@ def classify_exception(exc: BaseException) -> str:
             BadRequestError,
         )
     except Exception:  # pragma: no cover - 依赖缺失时退化为 unknown
-        httpx = None
         APITimeoutError = APIConnectionError = AuthenticationError = BadRequestError = ()
 
     if isinstance(exc, asyncio.TimeoutError):

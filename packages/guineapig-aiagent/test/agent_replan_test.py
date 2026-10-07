@@ -198,6 +198,83 @@ async def test_engine_carries_unresolved_failure_across_replan(mocker):
 
 
 @pytest.mark.asyncio
+async def test_engine_sorts_corrective_steps_topologically(mocker):
+    """修正步骤必须按拓扑序执行，即使 LLM 返回逆依赖序。"""
+
+    async def fake_execute(capability, params):
+        if capability == "web_search":
+            return {"error": "超时", "error_type": "timeout", "error_suggestion": "重试", "result": ""}
+        return {"result": "修正后的答案", "char_count": 6}
+
+    mocker.patch.object(handlers_mod.CapabilityHandlers, "execute", side_effect=fake_execute)
+    mocker.patch.object(
+        engine_mod.Replanner,
+        "replan",
+        return_value=[
+            DAGStep(step_id="r2", capability="llm_chat", action="b", params={"prompt": "p"}, depends_on=["r1"]),
+            DAGStep(step_id="r1", capability="llm_chat", action="a", params={"prompt": "p"}),
+        ],
+    )
+    mocker.patch.object(settings, "AGENT_REPLAN_ENABLED", True)
+    mocker.patch.object(settings, "AGENT_REPLAN_MAX", 1)
+
+    dag = DAGDefinition(
+        steps=[DAGStep(step_id="s1", capability="web_search", action="x", max_retries=0)],
+        original_intent="t",
+    )
+    engine = DAGExecutionEngine(dag, context={"session_id": "conv_1"})
+    events = [e async for e in engine.execute(session_id="conv_1")]
+
+    failed_ids = [
+        e.data.get("step_id")
+        for e in events
+        if e.event == StreamEventType.STEP_FAILED.value
+    ]
+    assert "r1" not in failed_ids
+    assert "r2" not in failed_ids
+
+    started = [
+        e.data.get("step_id")
+        for e in events
+        if e.event == StreamEventType.STEP_STARTED.value
+    ]
+    assert started.index("r1") < started.index("r2")
+
+    assert "r1" in engine.step_results
+    assert "r2" in engine.step_results
+    complete = [e for e in events if e.event == StreamEventType.EXECUTION_COMPLETE.value][-1]
+    assert complete.data["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_engine_contains_replan_exception(mocker):
+    """replan 抛异常时不得中断执行流，须发 REPLAN_FAILED 并正常收尾。"""
+
+    async def fake_execute(capability, params):
+        return {"error": "超时", "error_type": "timeout", "result": ""}
+
+    mocker.patch.object(handlers_mod.CapabilityHandlers, "execute", side_effect=fake_execute)
+    mocker.patch.object(
+        engine_mod.Replanner, "replan", side_effect=RuntimeError("boom")
+    )
+    mocker.patch.object(settings, "AGENT_REPLAN_ENABLED", True)
+    mocker.patch.object(settings, "AGENT_REPLAN_MAX", 1)
+
+    dag = DAGDefinition(
+        steps=[DAGStep(step_id="s1", capability="web_search", action="x", max_retries=0)],
+        original_intent="t",
+    )
+    engine = DAGExecutionEngine(dag, context={"session_id": "conv_1"})
+    events = [e async for e in engine.execute(session_id="conv_1")]
+
+    types = [e.event for e in events]
+    assert StreamEventType.REPLAN_FAILED.value in types
+    complete = [e for e in events if e.event == StreamEventType.EXECUTION_COMPLETE.value][-1]
+    assert complete.data["status"] == "completed_with_errors"
+    assert complete.data["replanned"] is False
+
+
+@pytest.mark.asyncio
 async def test_engine_completed_steps_never_exceed_total(mocker):
     async def fake_execute(capability, params):
         if capability == "web_search":

@@ -63,6 +63,35 @@ def test_classify_exception_unknown():
     assert classify_exception(ValueError("x")) == "unknown"
 
 
+def test_classify_exception_httpx_timeout_and_connect():
+    import httpx
+
+    req = httpx.Request("GET", "https://example.com")
+    assert classify_exception(httpx.TimeoutException("t", request=req)) == "timeout"
+    assert classify_exception(httpx.ConnectError("c", request=req)) == "connection"
+
+
+def test_classify_exception_openai_auth_and_bad_request():
+    import httpx
+    from openai import AuthenticationError, BadRequestError
+
+    def _response(status: int) -> httpx.Response:
+        return httpx.Response(status, request=httpx.Request("POST", "https://api.openai.com/v1/x"))
+
+    assert (
+        classify_exception(
+            AuthenticationError("bad key", response=_response(401), body=None)
+        )
+        == "auth"
+    )
+    assert (
+        classify_exception(
+            BadRequestError("bad request", response=_response(400), body=None)
+        )
+        == "bad_request"
+    )
+
+
 def test_exception_result_logs_traceback_and_shape(captured_records):
     r = exception_result(ValueError("bad"), capability="rag", context="执行异常")
     assert r["error_type"] == "unknown"
