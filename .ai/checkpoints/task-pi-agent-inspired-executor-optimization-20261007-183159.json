@@ -1,0 +1,32 @@
+{
+  "timestamp": "2026-10-07T18:31:59.341285",
+  "reason": "task-complete",
+  "focus": {
+    "service": "guineapig-aiagent",
+    "task_id": "pi-agent-inspired-executor-optimization",
+    "task_name": "借鉴 pi-agent 的 DAG 执行引擎三项优化（错误即消息 / 输出截断 / 内核+叠加）",
+    "status": "completed",
+    "started_at": "2026-10-07",
+    "description": "研读 pi-agent（Mario Zechner 的终端编码 Agent，v0.80.2，10 章源码）后，对 guineapig-aiagent 的 DAG 执行引擎做三项优化：(1) 错误即消息 + 错误分层，并让 DAG 具备有界自纠错；(2) 工具输出截断，防止单条超大结果撑爆后续 LLM 上下文；(3) 内核+叠加重构，抽出可插拔中间件扩展点。TDD + 子代理逐任务评审 + 终审修复波，dev-v1007 上 21 个提交，aiagent 全量测试 236 passed。",
+    "milestones": {
+      "错误即消息 + 错误分层 + DAG 自纠错（9 commits）": "2026-10-07",
+      "工具输出截断（5 commits）": "2026-10-07",
+      "内核 + 叠加 中间件重构（7 commits）": "2026-10-07"
+    },
+    "completed_tasks": [
+      "errors.py：error_result/exception_result/classify_exception/StepFailure；handlers.py 全部失败返回改为具体文案+error_type+修复建议；engine 框架层兜底 exception_result（logger.opt(exception=e).error 保留 traceback）",
+      "replanner.py + REPLAN prompt：失败回喂 LLM 生成仅 server 端修正步骤，DAGValidator 校验；engine 有界 while re-plan 循环（AGENT_REPLAN_ENABLED/MAX、carry-forward 未解决失败、修正计划拓扑排序、replan 异常隔离）；新增 REPLAN_STARTED/GENERATED/FAILED 事件",
+      "truncate.py：head/tail 双向 + 行2000/字节50KB 双限制 + UTF-8 边界安全 + 截断提示；接入 server 的 result 与 client 的 stdout/stderr；AGENT_TOOL_OUTPUT_* 配置（默认开启）",
+      "middleware.py：StepMiddleware 三钩子（before_step/after_step/on_step_error）+ MiddlewareRunner + 4 个默认中间件（ParamResolution/McpConnection/UnresolvedRefGuard/ToolOutputTruncation）；engine 行为零回归接入；提供可拦截扩展点（自定义 block/transform/observe）",
+      "测试：agent_error_message_test / agent_replan_test / executor_middleware_test / tool_output_truncation_test，约 1000 行；aiagent 全量 236 passed（--ignore=test/routers_agent_test.py，该文件为仓库预存在挂起项）",
+      "harness 更新（AGENTS.md 模块路由 / lessons L062-066 / SP-043-046 / AP-037-038 / CURRENT_FOCUS / checkpoint）"
+    ],
+    "next_tasks": [
+      "生产开启自纠错：.env 设 AGENT_REPLAN_ENABLED=true（默认 false，避免既有单测触发网络 LLM 调用）",
+      "可选：把默认路径 execution_complete.status 语义变化（任一步骤失败 → completed_with_errors）同步给 backend/client 消费方",
+      "可选（pi 借鉴第二梯队）：Skills 懒加载（清单常驻+按需 read）、系统提示词分层 XML 组装、RAG/检索结果截断阈值调参"
+    ],
+    "updated_at": "2026-10-07T15:00:00"
+  },
+  "session_end": true
+}

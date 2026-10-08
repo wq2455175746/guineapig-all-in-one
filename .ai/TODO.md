@@ -73,6 +73,21 @@
 
 ---
 
+## 🟢 AI Agent 执行引擎优化（借鉴 pi-agent，2026-10-07）
+
+> 来源：pi-agent（终端编码 Agent harness，v0.80.2）源码研读对比，详见 `docs/design-docs/pi-agent-borrowable-ideas.md`
+> 分支 `dev-v1007`，21 commits（`e958fc2..06c403e`），aiagent 全量测试 236 passed
+
+### guineapig-aiagent
+- [x] **错误即消息 + 错误分层**：`errors.py`（`error_result`/`exception_result`/`classify_exception`/`StepFailure`）；handlers 全部失败返回具体文案+error_type+建议；engine 框架层兜底保留 traceback。失败步骤写入 `step_results` 供总结/re-plan 消费
+- [x] **DAG 有界自纠错**：`replanner.py` 失败回喂 LLM 生成仅 server 端修正步骤（DAGValidator 校验）；engine 有界 while 循环 + carry-forward 未解决失败 + 修正计划拓扑排序 + 异常隔离；新增 REPLAN_* 事件与 `AGENT_REPLAN_ENABLED/MAX`
+- [x] **工具输出截断**：`truncate.py`（head/tail 双向 + 行2000/字节50KB 双限制 + UTF-8 边界安全 + 截断提示）；接入 server result 与 client stdout/stderr；`AGENT_TOOL_OUTPUT_*` 配置
+- [x] **内核+叠加重构**：`middleware.py`（`StepMiddleware` 三钩子 + `MiddlewareRunner` + 4 个默认中间件）；engine 行为零回归接入；提供可拦截扩展点
+- [ ] **可选（第二梯队）**：Skills 懒加载（清单常驻 + 按需 read）、系统提示词分层 XML 组装、RAG/检索结果截断阈值调参
+- [ ] **上线动作**：生产 `.env` 设 `AGENT_REPLAN_ENABLED=true` 开启自纠错；同步 `execution_complete.status` 语义给 backend/client 消费方
+
+---
+
 ## 建议执行顺序
 
 1. **P0 安全**（zip 穿越 → ACL → 鉴权 → 命令注入 → admin token）

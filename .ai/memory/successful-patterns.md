@@ -581,3 +581,58 @@ func (*ResFiles) FindByIds(ctx, ids []uint) ([]ResFile, error) {
 - **结果必须重复验证**（LLM 有随机性，单次成功/失败都不可靠，本次 system-only 第一次成功、加历史后失败，跑了 A1/A2/B1/B2/C 共 6 组才敢下结论）
 - Langfuse/token 统计只能证明"内容进了请求"，证明不了"模型真的用了它"——唯一证据是对照输出的内容
 **适用**：所有"注入没生效 / 模型不听指令 / 输出时好时坏"的 LLM 排错
+
+## SP-043: 错误结果工厂（错误分层 + 保留旧字段）
+```python
+# app/agent/executor/errors.py
+error_result("联网搜索失败：搜索关键词为空", error_type="validation",
+             suggestion="请在 params 中提供非空 query", capability="web_search")
+# → {"error": ..., "error_type": "validation", "error_suggestion": ..., "result": ""}
+# 并 logger.log("WARNING", ...)
+
+exception_result(e, capability="rag", context="知识库检索失败")
+# → logger.opt(exception=e).error(...) 保留 traceback，再返回结构化结果
+```
+**适用**：所有 handler/工具失败返回；必须保留 `error`/`result` 旧键（下游 `if "error" in result` 依赖）
+
+## SP-044: StepMiddleware 三钩子 + 中间件链
+```python
+# app/agent/executor/middleware.py
+class StepMiddleware:
+    async def before_step(self, ctx) -> BlockResult | None: return None   # 拦截
+    async def after_step(self, ctx) -> dict | None: return None           # 转换
+    async def on_step_error(self, ctx) -> None: return None                # 观测（异常被隔离）
+
+engine = DAGExecutionEngine(dag, middlewares=[MyBlocker()])  # 或默认链
+```
+- 中间件**不产出 SSE 事件**；`before_step` 返回 `BlockResult(block=True, reason=...)` 即拦截并产出 `STEP_FAILED`
+- 自定义链用 `default_middlewares() + [custom]` 组合
+**适用**：安全策略、审计、结果脱敏、动态注入等横切逻辑
+
+## SP-045: 工具输出截断（head/tail + 双限制）
+```python
+# app/agent/executor/truncate.py
+truncate_head(text, max_lines=2000, max_bytes=50*1024)  # 检索类保留开头
+truncate_tail(text, ...)                                 # 执行类保留末尾
+truncate_tool_result(result, capability)                 # result + stdout/stderr 一起处理
+truncation_mode("rag")  # → "head"；"cli"/"mcp_*" → "tail"
+```
+**适用**：任何将进入后续 LLM 上下文的工具/检索/命令输出
+
+## SP-046: DAG 有界自纠错循环
+```python
+# app/agent/executor/engine.py（execute 执行段）
+while pending:
+    self.failed_steps = []
+    async for event in self._execute_batch(pending, inventory): yield event
+    unresolved = carried + list(self.failed_steps)
+    if not unresolved: break
+    if not self._can_replan(session_id, replan_round): carried = unresolved; break
+    replan_round += 1
+    corrective = await asyncio.to_thread(Replanner.replan, ..., failed=unresolved[0])  # try/except → REPLAN_FAILED
+    sorted_corrective = self._topological_sort_steps(corrective)   # 必须排序！
+    ...
+    carried = unresolved[1:]; pending = sorted_corrective
+failed = bool(carried) or bool(self.failed_steps)
+```
+**适用**：Plan-then-Execute 的 DAG 增加"遇错重规划"能力（对标 pi-agent ReAct 的自适应，但保持有界、可审计）

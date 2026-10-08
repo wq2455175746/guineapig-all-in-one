@@ -251,3 +251,13 @@ const DEFAULT_ALLOWED_COMMAND_BINARIES = [...newList]
 **错误**：所有模型走同一套 pipeline——搜索/RAG 结果 + 无条件追加的英文 Command Generation Rules 全部堆到 system prompt 末尾；8k 小模型（guineapig）跟不住，联网搜索"注入了但模型不用"，回复"我是AI模型，没有直接访问实时数据"
 **正确**：模型配置加 `is_small_model` 标记；小模型时搜索/RAG 注入当前 user 消息、跳过历史与 RAG、Command Rules 换一行简短中文提示；大模型保持 system 注入不变
 **原因**：system prompt 注入是业界标准，但隐含"模型指令跟随足够强"的前提。小模型对 system 多块堆叠的注意力弱，指令块越多越可能整段忽略；注入位置必须按模型能力分级
+
+## AP-037: 修正/追加的 DAG 步骤不经过拓扑排序直接执行
+**错误**：初始 DAG 用 `_topological_sort()` 排序后执行，但自纠错生成的修正步骤直接 `pending = corrective` 按 LLM 输出顺序执行；LLM 常把 `depends_on` 的步骤放在后面 → `_dependencies_resolved` 为假 → `STEP_FAILED` 并 `break`，整个修正计划被丢弃，自纠错静默失效
+**正确**：抽出 `_topological_sort_steps(steps)` 供初始与修正步骤共用；修正计划排序返回 None（循环依赖）时按 `REPLAN_FAILED` 处理
+**原因**：任何"分批/多来源"的步骤序列都必须统一过拓扑排序——执行顺序不能依赖 LLM 输出顺序
+
+## AP-038: 循环里每轮重置失败列表，导致多失败被丢弃 + 误报成功
+**错误**：`while` 每轮开头 `self.failed_steps = []`，re-plan 只取 `failed_steps[0]`，修正成功后循环退出 `failed = bool(self.failed_steps)` 为假 → 同批次里第二个未解决失败被静默丢弃，`execution_complete.status` 误报 `completed`；`completed_steps` 还会把未执行的尾部步骤计为完成
+**正确**：维护 `carried` 跨轮携带未解决失败（`unresolved = carried + bad`，re-plan 后 `carried = unresolved[1:]`）；`failed = bool(carried) or bool(self.failed_steps)`；`completed_steps` 在循环后统一按"原始步骤中 step_results 无 error"计数
+**原因**：循环内的"当前批次状态"与"整体未解决状态"必须分开；用批次状态推导全局结论会漏报失败、误报完成

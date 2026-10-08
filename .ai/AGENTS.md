@@ -34,8 +34,12 @@ make validate
 | `app/agent/capability_registry.py` | MCP 能力清单扫描 | `scan()` |
 | `app/agent/intent.py` | 意图分类 Pipeline | `QuickFilter`, `IntentScanner`, `DeepAnalyzer`, `IntentDecision` |
 | `app/agent/dag.py` | DAG 计划生成 | `DAGGenerator` |
-| `app/agent/executor/engine.py` | DAG 执行引擎 | `DAGExecutionEngine.execute()` |
+| `app/agent/executor/engine.py` | DAG 执行引擎（内核：拓扑/事件/重试/委托 + 有界自纠错 re-plan） | `DAGExecutionEngine.execute()` |
 | `app/agent/executor/handlers.py` | 能力执行器 | `CapabilityHandlers` |
+| `app/agent/executor/errors.py` | 错误分层：工具层具体化 + 框架层 traceback 兜底 + 分类 | `error_result()`, `exception_result()`, `classify_exception()`, `StepFailure` |
+| `app/agent/executor/middleware.py` | 执行中间件（内核+叠加；可拦截扩展点） | `StepMiddleware`, `MiddlewareRunner`, `default_middlewares()` |
+| `app/agent/executor/truncate.py` | 工具输出截断（head/tail 双向 + 行/字节双限制 + UTF-8 安全） | `truncate_head()`, `truncate_tail()`, `truncate_tool_result()` |
+| `app/agent/executor/replanner.py` | DAG 自纠错 re-plan（失败回喂 LLM，仅 server 端修正步骤） | `Replanner.replan()` |
 | `app/agent/models.py` | Agent 数据模型 | IntentDecisionResult, StreamEvent, DAGDefinition 等 |
 | `app/reporting/otel_metrics.py` | OTel 指标上报（Redis HINCRBY） | `report_chat_metrics()` |
 | `app/services/otel_service.py` | OTel 指标写入 Redis | `report_metrics()` |
@@ -104,6 +108,18 @@ See `.ai/rules/architecture.md` for full rules.
 3. 确保 use `async for` 迭代 async generator（避免 AP-014）
 4. metrics report 放在 generator 外部（避免 AP-015）
 5. 注册新事件类型到 `StreamEventType`
+
+### 添加 DAG 执行中间件（内核+叠加扩展点）
+1. `app/agent/executor/middleware.py` 继承 `StepMiddleware`，实现 `before_step`（可返回 `BlockResult(block=True, reason=...)` 拦截）/ `after_step`（返回改写后的 result）/ `on_step_error`（只观测）
+2. 加入 `default_middlewares()` 链（顺序敏感：ParamResolution → McpConnection → UnresolvedRefGuard → ToolOutputTruncation）；或经 `DAGExecutionEngine(dag, middlewares=[...])` 注入自定义链
+3. 中间件**不得产出 SSE 事件**（事件由内核发出）；`on_step_error` 异常被 Runner 隔离
+4. 自定义拦截：注意内核把所有 blocked 步骤统一记为 `error_type="unresolved_ref"`
+
+### 添加 DAG 自纠错行为
+1. `app/config.py` 的 `AGENT_REPLAN_ENABLED`（默认 false）/`AGENT_REPLAN_MAX` 控制轮次
+2. `app/agent/executor/replanner.py`：失败→LLM 生成修正计划，**仅保留 `ExecutionLocation.SERVER` 步骤**并经 `DAGValidator.validate`
+3. 修正步骤在 engine 内**必须经 `_topological_sort_steps()` 排序**（否则反序依赖会失败）
+4. 新事件类型注册到 `app/agent/models.py` 的 `StreamEventType`
 
 ### 添加 OTel 指标
 1. Python 侧：`otel_service.py` 调用 `hincrby()` + `expire()`（2 天 TTL）

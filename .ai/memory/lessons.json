@@ -548,6 +548,51 @@
       "context": "业内标准做法是 RAG/搜索上下文注入 system prompt，但那假设模型指令跟随足够强；本项目 guineapig 是 8k 小模型，跟不住堆叠的 system 块",
       "action": "模型表 user_aimodel 加 is_small_model 标记（前端可配），backend 透传给 aiagent；小模型时：只保留网络搜索+单轮用户请求，搜索/RAG 注入最后一条 user 消息，跳过对话历史与 RAG 记忆，Command Rules 用一行简短提示；大模型行为完全不变（保持 system 注入）。Agent DAG 路径对小模型直接拒绝提示切换模型",
       "tags": ["architecture", "small-model", "injection", "design"]
+    },
+    {
+      "id": "L062",
+      "date": "2026-10-07",
+      "type": "pattern",
+      "title": "错误即消息 + 错误分层：工具错误是给模型的反馈，不是给框架的终止信号",
+      "context": "DAG 步骤失败原先只返回 {\"error\": ...} 并用于重试/跳过，从不回喂模型；且错误文案笼统（'执行异常: ...'），模型/用户都无法据此纠正",
+      "action": "两层分工：(1) 工具层 handlers 用 error_result() 返回具体描述 + error_type（timeout/connection/auth/validation/config）+ 修复建议；(2) 框架层 engine 兜底用 exception_result()，logger.opt(exception=e).error 保留 traceback 后转成结构化结果。失败步骤写入 step_results（含 error/error_type/error_suggestion），供后续步骤引用、总结与 re-plan 消费。所有错误路径必须打日志",
+      "tags": ["aiagent", "agent", "error-handling", "error-as-message"]
+    },
+    {
+      "id": "L063",
+      "date": "2026-10-07",
+      "type": "pattern",
+      "title": "内核 + 叠加：把横切逻辑抽成可插拔中间件（三钩子）",
+      "context": "DAGExecutionEngine 803 行里编排内核、参数解析、MCP 注入、占位符校验、输出截断、错误上报全揉在一起，难测试难定制",
+      "action": "内核只保留拓扑序/SSE 事件/重试/client 委托/状态记录；抽 StepMiddleware 三钩子——before_step（返回 BlockResult 可拦截）、after_step（返回改写 result）、on_step_error（只观测，异常被 Runner 隔离）。默认链 ParamResolution→McpConnection→UnresolvedRefGuard→ToolOutputTruncation 复现原行为，靠既有单测做零回归护栏；中间件不产出 SSE 事件",
+      "tags": ["aiagent", "agent", "architecture", "middleware", "kernel-overlay"]
+    },
+    {
+      "id": "L064",
+      "date": "2026-10-07",
+      "type": "pattern",
+      "title": "工具输出截断：双限制 + 双向策略 + UTF-8 边界安全 + 截断提示",
+      "context": "单条 MCP/RAG/命令结果可能几十 KB~MB，经 {{step.result}} 注入后续 LLM 会撑爆上下文；直接按字节切又会切坏 emoji/中文",
+      "action": "移植 pi-agent truncate.ts：行数(2000)+字节(50KB)双限制谁先触发谁赢；检索类(rag/web_search/memory)用 truncate_head 保留开头，执行类(cli/mcp/stdout/stderr)用 truncate_tail 保留末尾；UTF-8 从边界回退≤3 字节保证不切碎多字节字符；截断后追加 '... [输出已截断：...]' 提示让模型知道看到的是片段",
+      "tags": ["aiagent", "context-engineering", "truncation", "utf8"]
+    },
+    {
+      "id": "L065",
+      "date": "2026-10-07",
+      "type": "design",
+      "title": "DAG 有界自纠错：失败回喂 re-planner，carry-forward 未解决失败",
+      "context": "原 DAG 一次成计划、机械执行，遇计划外失败只能重试/skip，模型不知道也无法补救",
+      "action": "步骤终态失败后，把 original_intent + 已执行结果摘要 + 失败步骤(含 error_type/建议) 回喂 LLM 生成修正计划；re-plan 仅允许 ExecutionLocation.SERVER 步骤并经 DAGValidator 校验；engine 用有界 while 循环（AGENT_REPLAN_MAX）执行，多失败时 carry-forward 未解决项，修正计划必须经 _topological_sort_steps 排序；replan 调用用 asyncio.to_thread 且 try/except（异常不中断 SSE，转 REPLAN_FAILED）。默认 AGENT_REPLAN_ENABLED=false 避免既有单测触发网络",
+      "tags": ["aiagent", "agent", "replan", "self-correction", "dag"]
+    },
+    {
+      "id": "L066",
+      "date": "2026-10-07",
+      "type": "bugfix",
+      "title": "实施计划里的测试期望值可能本身就是错的——执行时必须用真实行为校正",
+      "context": "编写计划时手写的断言有误：truncate head byte-limit 写 `\"a\"*50`（实际应为 `\"abcdefghij\"*5`）；中间件 block 测试用 capability=rag 但拦截器只拦 cli（永远不触发）。执行子代理发现后按真实语义修正",
+      "action": "TDD 执行阶段，若测试与实现语义冲突，先判定是'实现错'还是'计划测试错'：用最小推导（如截断前 50 单字节字符 = 前 5 个 10 字符串元）证明正确期望，修测试而非改实现；能力名、位置等常量要与被拦截/被检查的对象一致",
+      "tags": ["process", "tdd", "plan-review", "testing"]
     }
   ]
 }
