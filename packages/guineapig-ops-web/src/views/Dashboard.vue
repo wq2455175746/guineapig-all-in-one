@@ -206,7 +206,7 @@ async function loadFileChart(startDate, endDate) {
       summaryData.value.totalFiles = res.data.result?.total || 0
       // Create a simple chart showing file types distribution
       const typeCount = {}
-      const typeNames = { 0: 'TXT', 1: 'MD', 2: 'HTML', 3: 'PDF', 4: 'MP3', 5: 'IMG', 99: '其他' }
+      const typeNames = { 0: 'TXT', 1: 'MD', 2: 'HTML', 3: 'PDF', 4: 'MP3', 5: 'IMG', 6: 'OFFICE', 99: '其他' }
       files.forEach(f => {
         const name = typeNames[f.file_type] || '其他'
         typeCount[name] = (typeCount[name] || 0) + 1

@@ -63,7 +63,7 @@ secret:
 # Deployment 配置
 deployment:
   name: &deploymentName "guineapig-backend"
-  replicaCount: 1
+  replicaCount: 2
   app: "guineapig-backend"
   initContainer:
     enabled: false
@@ -123,15 +123,19 @@ deployment:
       periodSeconds: 10
       failureThreshold: 30
     restartPolicy: Always
-    terminationGracePeriodSeconds: 30
+    terminationGracePeriodSeconds: 60
     dnsPolicy: ClusterFirst
     imagePullPolicy: IfNotPresent
   imagePullSecrets: docker-login
   strategy:
-    maxUnavailable: 25%
-    maxSurge: 25%
+    maxUnavailable: 0
+    maxSurge: 1
   revisionHistoryLimit: 10
   progressDeadlineSeconds: 600
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
 
 affinity: {}
 nodeSelector: {}

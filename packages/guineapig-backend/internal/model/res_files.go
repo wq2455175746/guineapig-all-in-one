@@ -18,6 +18,7 @@ const (
 	FileTypePDF      = 3
 	FileTypeMP3      = 4
 	FileTypeIMG      = 5
+	FileTypeOffice   = 6 // docx/doc/xls/xlsx/ppt/pptx/rtf/odt/ods/odp/epub/csv 等（anydoc 解析）
 	FileTypeOther    = 99
 )
 

@@ -1,5 +1,9 @@
 # LangGraph 重构方案：Agent 编排引擎
 
+> **状态标注（2026-10-17）**：**提案 / 未实施**。当前代码 `app/agent/` 仍为自研
+> `intent → dag → executor` 编排，**未引入 LangGraph**，`uv.lock` 中亦无 langgraph 依赖。
+> 本文保留为决策脉络与后续方案参考，内容未按现状改写。
+
 > 基于方案 B（彻底重构）+ 方案 1（interrupt/resume 映射）
 
 ## 用户确认的决策

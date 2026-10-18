@@ -1,3 +1,6 @@
+> **状态标注（2026-10-17）**：**设计思考文档**，非现状实现描述。当前 Agent 实现见
+> `app/agent/`（intent / dag / executor）与 `aiagent-llm-integration.md`。内容按原文保留。
+
 ## 人类沟通的完整要素
 
 ```

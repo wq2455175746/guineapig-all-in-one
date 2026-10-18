@@ -97,13 +97,13 @@ deployment:
       periodSeconds: 10
       failureThreshold: 30
     restartPolicy: Always
-    terminationGracePeriodSeconds: 30
+    terminationGracePeriodSeconds: 120
     dnsPolicy: ClusterFirst
     imagePullPolicy: IfNotPresent
   imagePullSecrets: docker-login
   strategy:
-    maxUnavailable: 25%
-    maxSurge: 25%
+    maxUnavailable: 0
+    maxSurge: 1
   revisionHistoryLimit: 10
   progressDeadlineSeconds: 600
 
@@ -120,13 +120,17 @@ persistence:
         subPath: aiagent-data
     pvc:
       size: "50Gi"
-      accessMode: "ReadWriteOnce"
+      accessMode: "ReadWriteMany"
       storageClass: "nfs-storage-class"
 
 service:
   name: *deploymentName
   type: ClusterIP
-  sessionAffinity: None
+  sessionAffinity: ClientIP
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
 
 ingress:
   enabled: true
@@ -134,7 +138,8 @@ ingress:
   class: nginx
   proxyBodySize: 100m
   proxyNextUpstreamTimeout: '600'
-  proxyReadTimeout: '600'
+  proxyReadTimeout: '3600'
+  proxySendTimeout: '3600'
   rewriteTarget: '/$2'
   rules:
     - host: aiagent.guineapig.pre.example.com

@@ -1,5 +1,10 @@
 # Pi-Agent 可借鉴优化思路清单
 
+> **状态标注（2026-10-17）**：**分析文档**。其中部分"可借鉴"项已落地：
+> 错误即消息/分层（`executor/errors.py`）、双向输出截断（`executor/truncate.py`）、
+> 内核+叠加（`executor/middleware.py`）、有界自纠错（`executor/replanner.py`）。
+> 其余为待排期建议。内容按原分析保留。
+
 ## Metadata
 - **Status**: draft
 - **Created**: 2026-10-07

@@ -1,5 +1,7 @@
 # GuineaPig Product Sense
 
+> 本文档描述产品愿景与需求意图（product-level）。部分能力已实现，实现细节见 `docs/ARCHITECTURE.md`。
+
 ## Product Vision
 GuineaPig 是一个以语音交互为核心的 AI 桌面助手，通过 LLM + ASR + TTS 能力整合，让用户以最自然的语音方式控制 AI 完成各种任务。
 
@@ -7,7 +9,7 @@ GuineaPig 是一个以语音交互为核心的 AI 桌面助手，通过 LLM + AS
 1. **语音优先 (Voice First)**: 主要交互方式是语音输入输出，文本为辅助记录手段
 2. **AI 原生 (AI Native)**: 所有能力围绕 LLM 驱动循环构建，非传统功能堆砌
 3. **模块化 (Modular)**: 功能以 Skill/Subagent/MCP 方式扩展，核心循环不变
-4. **离线感知 (Offline Aware)**: 核心交互尽量不依赖实时网络（MVP 阶段为非实时）
+4. **信任边界 (Trust Boundary)**: server 端能力（web/rag/memory/llm）直连执行，client 端能力（CLI/Skill/mcp-stdio）委托客户端执行
 
 ## Core Features
 
@@ -28,6 +30,12 @@ GuineaPig 是一个以语音交互为核心的 AI 桌面助手，通过 LLM + AS
 - AI 接听/语音信箱
 - 自定义 Skill 系统
 
+### 实现现状（截至当前代码）
+- ✅ Phase 1 语音对话（ASR→Agent→LLM→TTS）、邮箱/设备注册登录、对话历史、用户管理
+- ✅ 多轮上下文（Redis 15 天滚动窗口 + 记忆摘要调度）
+- ✅ 自定义 Skill 系统、MCP 工具、RAG 知识库、IM Bot（飞书/Lark）
+- 🔜 实时翻译、听书位置记忆、新闻/股票、AI 接听（规划中）
+
 ## User Stories
 
 ### Voice Dialogue
@@ -45,6 +53,7 @@ GuineaPig 是一个以语音交互为核心的 AI 桌面助手，通过 LLM + AS
 
 ## Non-Functional Requirements
 - 语音交互延迟: < 3s (端到端)
-- 对话上下文窗口: 最近 20 轮
+- 对话上下文窗口: Redis 15 天滚动窗口 + 记忆摘要
 - 并发用户: MVP 支持 10 并发
-- 音频格式: MP3 (客户端) / OPUS (实时模式预留)
+- 音频格式: MP3（客户端 AudioWorklet 采集 + lamejs 编码）
+- 单次录音时长: 10s（客户端 `MAX_DURATION`）

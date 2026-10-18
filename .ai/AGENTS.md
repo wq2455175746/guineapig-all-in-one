@@ -57,7 +57,9 @@ make validate
 | `internal/service/otel_sync.go` | Asynq Worker: Redis→MySQL OTel 指标同步 |
 | `internal/service/user_chat_config.go` | Redis 用户聊天配置缓存（跨渠道模型选择） |
 | `internal/service/chat_sync.go` | 同步消息处理（IM Bot 消息 → LLM → 回复） |
-| `internal/service/chat_bot_binding.go` | Bot 消息分发 + BotUserID 绑定 |
+| `internal/service/chat_bot_binding.go` | Bot 消息分发 + BotUserID 绑定；绑定/解绑经 Pub/Sub 广播 |
+| `internal/service/bot_control.go` | IM Bot 跨副本控制：Redis Pub/Sub `bot:control` 启停（仅 Bot 实例订阅） | `PublishBotControl`, `SubscribeBotControl` |
+| `internal/service/chat_hub.go` | WS 网关 Hub：连接注册/消息路由/异步流式代理到 aiagent SSE | `ServeWS`, `handleChatSend`, `proxyAiAgentStream` |
 | `internal/model/chat_otel.go` | 指标模型 + UpsertCount |
 | `internal/model/res_bot.go` | Bot 配置 GORM 模型 |
 | `internal/router/bot/` | Bot 管理 API（list/update/delete） |
@@ -67,6 +69,7 @@ make validate
 | `pkg/middleware/auth.go` | 三套鉴权：`X-User-Token`/`X-Admin-Token`/`X-Inner-Token` | `CurrentUserID`, `IsAdminSession`, `BindRequester` |
 | `pkg/utils/httpclient.go` | 共享 HTTP client 连接池 + aiagent 调用附加鉴权 | `NewHTTPClient()`, `AttachAiAgentAuth()` |
 | `pkg/utils/s3key.go` | S3 key 属主解析（预签名下载 IDOR 校验） | `KeyOwnerUserID()` |
+| `pkg/utils/snowflake.go` | Snowflake ID；nodeID 按 `K8S_POD_NAME`/hostname 派生（多副本唯一） | `SnowflakeID()` |
 
 ## Architecture Constraints
 
@@ -77,6 +80,7 @@ make validate
 5. **日志规范**：backend 使用 Zap，aiagent 使用 Python logging，统一带上 request_id
 6. **例外规则**：aiagent 可直写 Redis OTel 指标（HINCRBY），backend Asynq Worker 定期 SCAN → MySQL UPSERT
 7. **定时任务**：统一使用 Asynq（Scheduler + Server），禁止 goroutine + ticker
+8. **多副本 / 长连接部署**：client↔backend 的 WS 单连接天然钉 Pod（推送由本连接触发，无需跨 Pod 广播）；backend↔aiagent 的多请求会话靠 Service `sessionAffinity: ClientIP` 钉同源；IM Bot 用 `RUN_BOTS` + 专用 1 副本 Deployment + Redis Pub/Sub 跨副本控制；Asynq 定时任务用 `asynq.Unique(ttl)` 去重（Scheduler 无 leader 选举）；共享卷用 RWX；ID 生成器 nodeID 按 Pod 派生；升级统一 `maxUnavailable:0` + preStop + PDB + 大 grace。详见 `docs/design-docs/distributed-k8s-deployment.md`
 
 See `.ai/rules/architecture.md` for full rules.
 
@@ -129,17 +133,19 @@ See `.ai/rules/architecture.md` for full rules.
 ### 添加 Backend Asynq 定时任务
 1. `internal/service/` 实现业务处理函数
 2. `pkg/tasks/` 定义 TaskType 常量 + Handler 函数
-3. `pkg/plugin/` 中注册 Scheduler cron 表达式 + Server Handler
-4. 使用 `RunAsync()` 非阻塞启动（与 Echo 共存）
+3. `main.go` 注册 Scheduler cron 表达式（`scheduler.Register(...)`）+ ServeMux Handler
+4. **多副本去重**：定时任务必须带 `asynq.Unique(ttl)`（TTL < 调度周期且 > 副本时钟抖动）。Scheduler 无 leader 选举、多实例会各自入队；asynq 的分布式性在 Server(worker) 而非 Scheduler
+5. 使用 `RunAsync()` 非阻塞启动（与 Echo 共存）
 
 ### 添加 IM Bot（飞书/企微/钉钉）
-1. `internal/router/bot/*.go` — 定义 Bot 管理 API（list/update/delete）
-2. `internal/model/res_bot.go` — Bot 配置 GORM 模型（AppId, AppSecret, WebhookUrl）
-3. `internal/service/bot.go` — BotManager + Bot interface 实现
-4. `internal/service/chat_bot_binding.go` — Bot 消息处理入口（dispatch to SyncChatMessage）
+1. `internal/router/bot/*.go` — Bot 管理 API（bind/unbind/info + admin list）
+2. `internal/model/res_bot.go` — Bot 绑定 GORM 模型（AppId/AppSecret/BotStatus）
+3. `internal/bot/` — Bot interface + `BotManager`（进程内，key=`{platform}:{user_id}`）+ FeishuBot（larkws 长连接）
+4. `internal/service/chat_bot_binding.go` — Bot 消息处理入口（dispatch → `SyncChatMessage`）+ 绑定/解绑
 5. `internal/service/chat_sync.go` — 同步方式处理 Bot 消息（findOrCreateExtConversation → LLM → 回复）
-6. 前端 `views/info/InfoChannelMgr.vue` — Bot 管理页面
-7. Bot AppSecret 使用 RSA 加密传输
+6. `internal/service/bot_control.go` — 绑定/解绑经 Redis Pub/Sub（`bot:control`）广播，仅 Bot 实例本地启停
+7. **多副本**：`config.RunBots`(RUN_BOTS) 门控；Helm `bots.enabled` 建 1 副本 `{name}-bots` Deployment 承载所有长连接，主 Deployment `RUN_BOTS=false`
+8. Bot AppSecret 使用 RSA 加密传输；前端 `views/info/InfoChannelMgr.vue` 管理页面
 
 ### 添加 Docker / docker-compose
 1. `packages/*/Dockerfile` — 多阶段构建（Go/Python/Vue）
@@ -150,12 +156,22 @@ See `.ai/rules/architecture.md` for full rules.
 
 ### 添加 Helm Chart
 1. `deployment/{service}/helm/` — 每个服务独立 Chart
-2. 模板文件：deployment.yaml, service.yaml, configmap.yaml, secret.yaml, ingress.yaml, pvc.yaml
+2. 模板文件：deployment.yaml, service.yaml, configmap.yaml, secret.yaml, ingress.yaml, pvc.yaml, pdb.yaml（PodDisruptionBudget）
 3. 环境 values：values.yaml（默认）, values-dev.yaml, values-test.yaml, values-pre.yaml, values-release.yaml
-4. 参考模板模式：`_helpers.tpl`（release.name/namespace）, checksum/config 注解触发滚动更新
-5. Backend 用 ConfigMap 挂载 config.yaml（变量用 ${ENV_VAR} 从 Secret 注入）
-6. AiAgent 用 Secret envFrom 注入环境变量，PVC 挂载 /app/data
+4. 参考模板模式：`_helpers.tpl`（release.name/namespace + backend `podTemplate` 复用 Pod 规格）, checksum/config 注解触发滚动更新
+5. Backend 用 ConfigMap 挂载 config.yaml（变量用 ${ENV_VAR} 从 Secret 注入）；`deployment-bots.yaml` 为 IM Bot 专用 1 副本 Deployment
+6. AiAgent 用 Secret envFrom 注入环境变量，PVC 挂载 /app/data（多副本共享需 RWX）
 7. Ops-web 用 ConfigMap 挂载 nginx.conf（反向代理 + WebSocket 到 backend）
+
+### 多副本 / 分布式部署（长连接服务）
+1. **WS 网关（backend）多副本**：单 TCP 连接天然钉 Pod，所有推送由本连接请求触发 → 无需跨 Pod 广播即可多副本
+2. **有状态下游（aiagent SSE）**：Service 设 `sessionAffinity: ClientIP`（同一 backend Pod 源 IP 的 SSE + 控制 POST 钉同一 aiagent Pod）
+3. **IM Bot**：`RUN_BOTS` + Helm `bots.enabled` 专用 1 副本 Deployment + Redis Pub/Sub 控制（见上）
+4. **定时任务**：`asynq.Unique(ttl)` 去重
+5. **升级**：`strategy maxUnavailable:0/maxSurge:1` + `preStop: sleep 8` + PDB + 大 `terminationGracePeriodSeconds`
+6. **Ingress**：`proxy-read-timeout`/`proxy-send-timeout` 调大（≥3600s，长连接心跳需远小于它）
+7. **存储/ID**：共享卷用 RWX；Snowflake 等 ID 生成器 nodeID 按 Pod 派生
+8. 详见 `docs/design-docs/distributed-k8s-deployment.md`
 
 ### 添加跨渠道用户配置缓存（Redis）
 1. `internal/service/user_chat_config.go` — `SetUserChatConfig` + `GetUserChatConfig`
@@ -211,6 +227,7 @@ See `.ai/rules/architecture.md` for full rules.
 | `docs/DEVELOPMENT.md` | 开发环境搭建 |
 | `docs/PRODUCT_SENSE.md` | 产品设计理念 |
 | `docs/design-docs/` | 设计方案 |
+| `docs/design-docs/distributed-k8s-deployment.md` | 分布式 K8s 部署与最小影响升级方案 |
 | `docs/exec-plans/` | 执行计划 |
 | `docs/superpowers/` | AI 开发超能力技能 |
 | `.ai/rules/architecture.md` | 详尽架构规则（AI 可读图形式） |

@@ -88,6 +88,32 @@
 
 ---
 
+## 🟢 分布式部署与最小影响升级（2026-10-18）
+
+> 来源：多副本 K8s 部署 + 滚动升级可行性分析，详见 `docs/design-docs/distributed-k8s-deployment.md`
+> 结论：长连接（client↔backend WS、backend↔aiagent SSE）把执行状态绑在进程上 → 服务**有状态**，不能像无状态微服务那样无感升级；多副本需连接粘性 / 状态外置
+
+### guineapig-backend / (Helm)
+- [x] **aiagent Service ClientIP 亲和**：同一 backend Pod 源 IP 的 SSE + 控制 POST 钉同一 aiagent Pod
+- [x] **升级配置**：`preStop: sleep 8` + PDB + `maxUnavailable:0/maxSurge:1` + 大 `terminationGracePeriodSeconds`；ingress `proxy-read/send-timeout` 3600
+- [x] **asynq Scheduler 去重**：`main.go` 两个定时任务加 `asynq.Unique(4m/11h)`（保留多副本 HA 且全局只执行一次）
+- [x] **多副本说明文档**：分析长连接/多副本/升级的成本与边界
+
+### guineapig-aiagent
+- [x] **PVC `ReadWriteOnce`→`ReadWriteMany`**：多副本共享 `/app/data`
+
+### guineapig-backend（代码）
+- [x] **Snowflake nodeID 按 Pod 派生**：`hash(K8S_POD_NAME|hostname)%1024`（+ `snowflake_test.go`）
+- [x] **IM Bot 单实例化**：`config.RunBots`(RUN_BOTS) + `bot_control.go` Redis Pub/Sub(`bot:control`) + Helm `{name}-bots` 专用 1 副本 Deployment（`bots.enabled` 单源开关）
+
+### 待办
+- [ ] **客户端重连 jitter**（客户端代码，缓解升级断连惊群）
+- [ ] **Agent 任务断点续跑**：状态外置 Redis + 可恢复执行（较大重构，做到"升级不丢在跑任务"的唯一路径）
+- [ ] **验证 aiagent Pod 间无 SNAT 到节点 IP**（保证 ClientIP 亲和键为 Pod IP）
+- [ ] 可选：Bot 状态查询/管理定向到 Bot 实例，或加事件幂等去重
+
+---
+
 ## 建议执行顺序
 
 1. **P0 安全**（zip 穿越 → ACL → 鉴权 → 命令注入 → admin token）

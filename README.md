@@ -10,9 +10,9 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/Go-1.24-blue?logo=go" alt="Go">
-  <img src="https://img.shields.io/badge/Python-3.11%2B-blue?logo=python" alt="Python">
-  <img src="https://img.shields.io/badge/Vue-3.4-brightgreen?logo=vue.js" alt="Vue">
-  <img src="https://img.shields.io/badge/Electron-28-blue?logo=electron" alt="Electron">
+  <img src="https://img.shields.io/badge/Python-3.13%2B-blue?logo=python" alt="Python">
+  <img src="https://img.shields.io/badge/Vue-3.5-brightgreen?logo=vue.js" alt="Vue">
+  <img src="https://img.shields.io/badge/Electron-42-blue?logo=electron" alt="Electron">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
 </p>
 
@@ -75,45 +75,44 @@
 │              Presentation Layer (Layer 4)             │
 │  ┌─────────────────────┐  ┌────────────────────────┐  │
 │  │  guineapig-client   │  │   guineapig-ops-web    │  │
-│  │  (Electron + Vue 3) │  │  (Vue 3 + Element Plus)│  │
+│  │  (Electron 42 + Vue)│  │  (Vue 3 + PrimeVue)    │  │
 │  │  桌面语音客户端      │  │  运营管理后台           │  │
 │  └─────────┬───────────┘  └──────────┬─────────────┘  │
-│            │       HTTP/WebSocket     │                │
+│            │  HTTP/WebSocket          │  HTTP          │
 ├────────────┼──────────────────────────┼───────────────┤
 │            ▼                          ▼               │
 │              Business Logic (Layer 3)                  │
 │  ┌─────────────────────────────────────────────────┐  │
 │  │           guineapig-backend (Go)                │  │
-│  │  Echo v4 · GORM · Redis · Asynq · Zap          │  │
+│  │  Echo v4 · GORM · Redis · Asynq · Zap           │  │
 │  │  业务编排 · 用户管理 · 对话管理 · 任务调度       │  │
 │  └─────────────────────┬───────────────────────────┘  │
-│                        │  HTTP / gRPC                  │
+│                        │  HTTP                          │
 ├────────────────────────┼──────────────────────────────┤
 │                        ▼                               │
 │               AI Capability (Layer 2)                  │
 │  ┌─────────────────────────────────────────────────┐  │
 │  │         guineapig-aiagent (FastAPI)             │  │
-│  │  ASR (SenseVoice) · LLM (DeepSeek) · TTS        │  │
-│  │  AI Agent · MCP · RAG · Skill System            │  │
+│  │  ASR/TTS (外部 HTTP API) · LLM (OpenAI 兼容)    │  │
+│  │  Agent (意图→DAG→执行器) · MCP · RAG(Milvus)    │  │
 │  └──────────┬──────────┬──────────┬────────────────┘  │
 │             │          │          │                    │
 ├─────────────┼──────────┼──────────┼──────────────────┤
 │             ▼          ▼          ▼                   │
 │           Infrastructure (Layer 1)                     │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐              │
-│  │  MySQL   │ │  Redis   │ │ MinIO/S3 │              │
-│  │ 业务数据  │ │ 会话缓存  │ │  音频存储 │              │
-│  └──────────┘ └──────────┘ └──────────┘              │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ │
+│  │  MySQL   │ │  Redis   │ │ MinIO/S3 │ │  Milvus  │ │
+│  │ 业务数据  │ │ 会话缓存  │ │  音频存储 │ │ 向量检索 │ │
+│  └──────────┘ └──────────┘ └──────────┘ └──────────┘ │
 └──────────────────────────────────────────────────────┘
 ```
 
 ### 数据流
 
 ```
-用户语音 → ASR(语音转文字) → LLM(语义理解+推理) → TTS(文字转语音) → 语音播放
+用户语音 → ASR(语音转文字) → Agent(意图→DAG→执行) → LLM → TTS(文字转语音) → 语音播放
                     ↓                ↓                        ↓
-                  S3存储          Agent执行                  S3存储
-                                (MCP工具调用)
+                  S3存储        MCP工具调用                  S3存储
 ```
 
 ### 依赖规则
@@ -134,28 +133,32 @@
 - 基于 S3 的音频文件中转存储
 
 ### 🤖 AI Agent 系统
-- **意图分类**: QuickFilter → IntentScanner → DeepAnalyzer 三级流水线
-- **DAG 执行引擎**: 支持多步骤复杂任务编排
+- **意图识别**: QuickFilter（规则分流）→ DeepAnalyzer（LLM 分析）
+- **DAG 执行引擎**: Plan-then-Execute，支持多步骤复杂任务编排
+- **工具信任边界**: server 端能力（web/rag/memory/llm/mcp-sse）直连执行；client 端能力（CLI/Skill/mcp-stdio）委托客户端执行
+- **HITL 人工确认**: 执行前计划确认、取消
 - **MCP 能力集成**: 工具调用、Skill 管理、文件操作
 - **SSE 流式响应**: 实时对话体验
 - **对话上下文管理**: 15 天滚动窗口记忆摘要
 
 ### 📊 运营管理后台 (ops-web)
 - 用户管理（注册/登录/权限）
-- Bot 配置管理
+- 模型 / Skill / MCP / 知识库(RAG) 配置管理
+- Bot 配置与信息渠道管理
 - 系统监控与指标可视化 (ECharts)
-- 对话记录查询
+- 对话记录查询、用户记忆与文件管理
 
 ### 🧩 Skill 能力系统
 - 自定义 Skill 上传与注册
 - SKILL.md 元数据规范
-- S3 分发 + 自动解压部署
+- S3 分发 + 客户端自动解压部署
 
 ### 🔧 其他能力
-- **IM Bot 集成**: 消息分发、自动回复
-- **RAG 检索增强**: Milvus 向量数据库
-- **OpenTelemetry 指标**: Redis → MySQL 指标同步
-- **Rate Limiting**: 可配置的 QPS/并发限制
+- **IM Bot 集成**: 飞书/Lark 长连接、消息分发、自动回复
+- **RAG 检索增强**: Milvus 向量数据库 + 重排序
+- **可观测性**: Langfuse（LLM 追踪）+ Prometheus 指标；Redis → MySQL 指标同步
+- **Rate Limiting**: 可按路由配置的并发限制（QPS 字段预留）
+
 
 ---
 
@@ -167,8 +170,8 @@
 |------|---------|------|
 | Docker & Docker Compose | 最新版 | 基础设施 (MySQL/Redis/MinIO) |
 | Go | 1.24+ | 后端服务 |
-| Python | 3.11+ | AI Agent |
-| Node.js | 18+ | Web 前端 & 桌面客户端 |
+| Python | 3.13+ | AI Agent (推荐 uv) |
+| Node.js | 20.19+ / 22.12+ | Web 前端 & 桌面客户端 |
 | Make | - | 项目管理 |
 
 ### 1 分钟快速启动
@@ -193,12 +196,12 @@ cp packages/guineapig-aiagent/.env.example packages/guineapig-aiagent/.env
 make dev          # 或分别启动:
 # make dev-backend   # 启动后端 (Go) — 端口 6880
 # make dev-aiagent   # 启动 AI Agent (FastAPI) — 端口 8000
-# make dev-frontend  # 启动运营管理后台 — 端口 3000
-# make dev-client    # 启动桌面客户端 (Electron)
+# make dev-frontend  # 启动运营管理后台 — 端口 5173
+# make dev-client    # 启动桌面客户端 (Electron) — 端口 5174
 ```
 
 启动后访问:
-- **运营管理后台**: http://localhost:3000
+- **运营管理后台**: http://localhost:5173
 - **后端 API**: http://localhost:6880/api/v1
 - **AI Agent**: http://localhost:8000/docs (Swagger UI)
 
@@ -242,16 +245,19 @@ make validate-client
 # 2. internal/request/   — 定义请求结构体
 # 3. internal/response/  — 定义响应结构体
 # 4. internal/service/   — 实现业务逻辑
-# 5. internal/router/    — 注册路由 handler
-# 6. internal/router/router.go — 注册路由组
+# 5. internal/router/<资源>/  — 实现 handler
+# 6. internal/router/router.go — 在 init() 中注册路由
+#    AddGetRouter("/xxx", ...)        -> /api/v1/xxx
+#    addAdminRouter(...)              -> /admin/api/v1/xxx
+#    addInnerRouter(...)              -> /inner/api/v1/xxx
 ```
 
 ### 添加新 AI 能力
 
 ```bash
-# 1. app/routers/        — 定义新端点
+# 1. app/routers/        — 定义新端点（前缀 /guineapig-aiagent/<module>）
 # 2. app/services/       — 实现能力服务
-# 3. app/agent/          — 注册到能力清单
+# 3. app/agent/capability_registry.py — 注册到能力清单
 # 4. 更新 backend 的 aiagent 调用
 ```
 
@@ -261,11 +267,15 @@ make validate-client
 |------|------|------|
 | guineapig-backend | 6880 | HTTP |
 | guineapig-aiagent | 8000 | HTTP |
-| guineapig-aiagent | 50051 | gRPC |
-| guineapig-ops-web | 3000 | HTTP (dev) |
+| guineapig-ops-web | 5173 | HTTP (dev) |
+| guineapig-client | 5174 | HTTP (dev) |
 | MySQL | 3306 | TCP |
 | Redis | 6379 | TCP |
 | MinIO (S3) | 9000 | HTTP |
+| Milvus | 19530 | TCP |
+
+> 历史文档中的 aiagent gRPC 端口 50051 当前未使用。
+
 
 ---
 
@@ -322,27 +332,31 @@ guineapig-all-in-one/
 │   │   ├── internal/
 │   │   │   ├── model/              # GORM 数据模型
 │   │   │   ├── service/            # 业务逻辑
-│   │   │   ├── router/             # HTTP 路由层
+│   │   │   ├── router/             # HTTP 路由层 (router.go 集中注册)
 │   │   │   ├── request/            # 请求结构体
 │   │   │   └── response/           # 响应结构体
-│   │   ├── pkg/                    # 可复用包
-│   │   ├── config.yaml            # 配置文件
+│   │   ├── pkg/                    # 可复用包 (plugin/middleware/auth/...)
+│   │   ├── config.yaml             # 配置文件
+│   │   ├── sql/                    # 数据库 schema
 │   │   └── Dockerfile
 │   ├── guineapig-aiagent/          # AI 能力服务 (FastAPI)
 │   │   ├── app/
-│   │   │   ├── agent/              # Agent 引擎 (意图/DAG/执行器)
-│   │   │   ├── routers/            # API 路由
-│   │   │   ├── services/           # 业务服务
-│   │   │   └── schemas/            # 数据模型
+│   │   │   ├── agent/              # Agent 引擎 (intent/dag/executor)
+│   │   │   ├── routers/            # API 路由 (/guineapig-aiagent/*)
+│   │   │   ├── services/           # 原子能力服务
+│   │   │   ├── schemas/            # Pydantic 模型
+│   │   │   └── core/               # LLM/Milvus/S3 客户端
 │   │   └── Dockerfile
-│   ├── guineapig-client/           # 桌面客户端 (Electron + Vue 3)
-│   └── guineapig-ops-web/          # 运营管理后台 (Vue 3 + Element Plus)
+│   ├── guineapig-client/           # 桌面客户端 (Electron + Vue 3 + TS)
+│   │   └── src/{main,preload,renderer,renderer-overlay,composables}
+│   └── guineapig-ops-web/          # 运营管理后台 (Vue 3 + PrimeVue)
 ├── deployment/                     # Helm Charts
 │   ├── backend/helm/
 │   ├── aiagent/helm/
 │   └── ops-web/helm/
 ├── docs/                           # 文档
 │   ├── ARCHITECTURE.md             # 架构规则
+│   ├── DEVELOPMENT.md              # 开发指南
 │   ├── PRODUCT_SENSE.md            # 业务背景
 │   └── design-docs/                # 设计文档
 ├── scripts/                        # 工具脚本
@@ -360,45 +374,57 @@ guineapig-all-in-one/
 |------|------|------|
 | 语言 | Go 1.24 | 后端服务 |
 | HTTP | Echo v4 | REST API 框架 |
-| ORM | GORM | MySQL 数据库访问 |
-| 缓存 | go-redis | Redis 会话/缓存 |
-| 配置 | Viper | YAML + 环境变量配置 |
+| WebSocket | gorilla/websocket | 客户端对话通道 |
+| ORM | GORM (mysql/sqlite) | MySQL 数据库访问 |
+| 缓存 | go-redis v9 | Redis 会话/缓存 |
+| 任务队列 | Asynq | 定时/异步任务调度 |
+| 对象存储 | aws-sdk-go-v2 | S3 预签名上传/下载 |
+| 配置 | Viper + godotenv | YAML + 环境变量配置 |
 | 日志 | Zap | 结构化日志 |
-| 任务队列 | Asynq | 异步任务调度 |
+| IM SDK | larksuite/oapi-sdk-go | 飞书/Lark Bot |
 
 ### guineapig-aiagent
 | 组件 | 技术 | 用途 |
 |------|------|------|
-| 语言 | Python 3.11+ | AI 服务 |
-| HTTP | FastAPI | REST API 框架 |
-| ASR | SenseVoice-Small | 语音识别 |
-| TTS | CosyVoice2-0.5B | 语音合成 |
-| LLM | DeepSeek API | 大语言模型 |
-| Agent | MCP + DAG | AI Agent 框架 |
-| 向量库 | Milvus | RAG 检索 |
+| 语言 | Python 3.13+ | AI 服务 |
+| HTTP | FastAPI + Uvicorn | REST API 框架 (8000) |
+| LLM | `openai` SDK（OpenAI 兼容，默认 DeepSeek） | 大语言模型 |
+| ASR | 外部 HTTP API (`ASR_API_URL`) | 语音识别 |
+| TTS | 外部 HTTP API (`TTS_API_URL`) | 语音合成 |
+| Agent | 自研 意图→DAG→执行器 + MCP | AI Agent 框架 |
+| 向量库 | Milvus (pymilvus) | RAG 检索 |
+| 可观测 | Langfuse + Prometheus | 追踪与指标 |
 
 ### guineapig-ops-web
 | 组件 | 技术 |
 |------|------|
-| 框架 | Vue 3 + Vite |
-| UI | Element Plus |
-| 图表 | ECharts |
+| 框架 | Vue 3.5 + Vite 7 |
+| UI | PrimeVue 4 (Aura) |
+| 图表 | ECharts 5 |
+| HTTP | axios |
 
 ### guineapig-client
 | 组件 | 技术 |
 |------|------|
-| 框架 | Electron + Vue 3 |
-| 音频 | Web Audio API |
+| 框架 | Electron 42 + Vue 3.5 (TypeScript) |
+| UI | PrimeVue 4 (Aura) |
+| 音频 | AudioWorklet + lamejs (MP3 编码) |
+| 工具 | MCP SDK (stdio/sse/streamable-http) |
+| 加密 | jsencrypt (RSA) |
 
 ---
 
 ## 🔒 安全
 
-- API Key 使用 RSA 非对称加密传输（JSEncrypt 公钥加密，Go crypto/rsa 私钥解密）
+- 用户登录 API Key 使用 RSA 非对称加密传输（jsencrypt 公钥加密，Go crypto/rsa 私钥解密）
+- 用户会话 token：`X-User-Token` / `Authorization: Bearer`（HMAC-SHA256 签名）
+- 运营后台 `/admin/api/v1` 使用 `X-Admin-Token`；内部回调 `/inner/api/v1` 使用 `X-Inner-Token`（fail-closed）
 - 列表 API 敏感字段返回掩码 `***`
-- S3 使用预签名 URL 上传/下载
+- S3 使用预签名 URL 上传/下载（默认 15 分钟过期）
+- AIModel 连接测试有 SSRF 白名单（`AIMODEL_ALLOWED_HOSTS`）
 - `.env` 文件不提交 Git（已在 `.gitignore` 中配置）
 - AI Agent 内部 API 不对外暴露
+
 
 ---
 

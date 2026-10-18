@@ -1,0 +1,19 @@
+{{- if .Values.bots.enabled -}}
+# IM Bot 专用实例：全局仅此一个副本持有各应用的飞书长连接。
+# 主 Deployment 通过 RUN_BOTS=false 不启动 Bot；本实例 RUN_BOTS=true，
+# 并订阅 Redis Pub/Sub 控制通道，使任意副本处理的绑定/解绑都能在此生效。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.deployment.name }}-bots
+spec:
+  replicas: {{ .Values.bots.replicaCount | default 1 }}
+  selector:
+    matchLabels:
+      app: {{ .Values.deployment.app }}-bots
+  {{- include "guineapig-backend.podTemplate" (dict "ctx" . "app" (printf "%s-bots" .Values.deployment.app) "runBots" true) | nindent 2 }}
+  strategy:
+    # Recreate：避免滚动期同时存在两个副本各建一条长连接
+    type: Recreate
+  revisionHistoryLimit: {{ .Values.deployment.revisionHistoryLimit }}
+{{- end -}}

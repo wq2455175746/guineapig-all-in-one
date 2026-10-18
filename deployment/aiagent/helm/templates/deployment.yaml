@@ -196,6 +196,9 @@ spec:
         {{- if .Values.deployment.container.startupProbe }}
         startupProbe: {{- toYaml .Values.deployment.container.startupProbe | nindent 10 }}
         {{ end }}
+        {{- if .Values.deployment.container.lifecycle }}
+        lifecycle: {{- toYaml .Values.deployment.container.lifecycle | nindent 10 }}
+        {{- end }}
         terminationMessagePath: /dev/termination-log
         terminationMessagePolicy: File
         imagePullPolicy: {{ .Values.deployment.container.imagePullPolicy }}

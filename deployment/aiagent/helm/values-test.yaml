@@ -97,13 +97,13 @@ deployment:
       periodSeconds: 10
       failureThreshold: 30
     restartPolicy: Always
-    terminationGracePeriodSeconds: 30
+    terminationGracePeriodSeconds: 120
     dnsPolicy: ClusterFirst
     imagePullPolicy: IfNotPresent
   imagePullSecrets: docker-login
   strategy:
-    maxUnavailable: 25%
-    maxSurge: 25%
+    maxUnavailable: 0
+    maxSurge: 1
   revisionHistoryLimit: 10
   progressDeadlineSeconds: 600
 
@@ -120,13 +120,17 @@ persistence:
         subPath: aiagent-data
     pvc:
       size: "20Gi"
-      accessMode: "ReadWriteOnce"
+      accessMode: "ReadWriteMany"
       storageClass: "nfs-storage-class"
 
 service:
   name: *deploymentName
   type: ClusterIP
-  sessionAffinity: None
+  sessionAffinity: ClientIP
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
 
 ingress:
   enabled: false

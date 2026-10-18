@@ -12,6 +12,56 @@ from app.core.log import logger
 from app.core.oss_wrapper_utils import download_file_from_s3
 from app.core.milvus_clients import get_milvus_client
 
+# 直接按纯文本读取的扩展名（utf-8，回退 gbk）
+PLAIN_TEXT_EXTS = {"txt", "md", "markdown", "html", "htm"}
+
+# 需要交给 anydoc 解析为 Markdown 的扩展名（14 种 + pdf）
+ANYDOC_EXTS = {
+    "docx",
+    "doc",
+    "docm",
+    "xlsx",
+    "xls",
+    "xlsm",
+    "pptx",
+    "ppt",
+    "rtf",
+    "odt",
+    "ods",
+    "odp",
+    "epub",
+    "csv",
+    "pdf",
+}
+
+
+def _read_text_file(local_path: str) -> str:
+    """按纯文本读取文件，utf-8 失败时回退 gbk"""
+    try:
+        with open(local_path, "r", encoding="utf-8") as f:
+            return f.read()
+    except UnicodeDecodeError:
+        with open(local_path, "r", encoding="gbk") as f:
+            return f.read()
+
+
+def extract_document_text(local_path: str) -> str:
+    """
+    按扩展名提取文件文本内容。
+
+    - txt/md/html 等纯文本：直接读取
+    - docx/xlsx/pptx 等（含 pdf）：交给 anydoc 解析为 Markdown
+    - 其他（图片/音频/未知格式）：抛出异常，交由上层报告为嵌入失败
+    """
+    ext = os.path.splitext(local_path)[1].lower().lstrip(".")
+    if ext in PLAIN_TEXT_EXTS:
+        return _read_text_file(local_path)
+    if ext in ANYDOC_EXTS:
+        import anydoc
+
+        return anydoc.to_markdown(local_path)
+    raise ValueError(f"不支持的文件格式，无法解析（可能需要 OCR）: .{ext}")
+
 
 class TextChunker:
     """文本分块工具"""
@@ -161,9 +211,7 @@ class MilvusWriter:
         schema.add_field(
             field_name="text_chunk", datatype=DataType.VARCHAR, max_length=65535
         )
-        schema.add_field(
-            field_name="file_id", datatype=DataType.VARCHAR, max_length=36
-        )
+        schema.add_field(field_name="file_id", datatype=DataType.VARCHAR, max_length=36)
 
         index_params = client.prepare_index_params()
         index_params.add_index(
@@ -325,20 +373,10 @@ def process_file_embedding(params: dict):
             return
         logger.info(f"[RAG Embed] 文件下载完成: {local_path}")
 
-        # 2. 读取文件
-        text = ""
-        try:
-            with open(local_path, "r", encoding="utf-8") as f:
-                text = f.read()
-        except UnicodeDecodeError:
-            try:
-                with open(local_path, "r", encoding="gbk") as f:
-                    text = f.read()
-            except Exception as e:
-                logger.error(f"[RAG Embed] 读取文件失败: {e}")
-                return
+        # 2. 提取文本（txt/md/html 直接读取；docx/xlsx/pptx/pdf 等交给 anydoc 解析）
+        text = extract_document_text(local_path)
 
-        if not text.strip():
+        if not text or not text.strip():
             logger.warning(f"[RAG Embed] 文件内容为空: {local_path}")
             return
 
@@ -394,7 +432,9 @@ def process_file_embedding(params: dict):
         user_ids = [str(user_id)] * len(embeddings)
         text_chunks = chunks[: len(embeddings)]
 
-        writer.insert_batch(client, rag_name, file_id, ids, user_ids, embeddings, text_chunks)
+        writer.insert_batch(
+            client, rag_name, file_id, ids, user_ids, embeddings, text_chunks
+        )
 
         # 6. 报告 100% 完成
         report_progress(settings.BACKEND_BASE_URL, file_id, task_id, 100)

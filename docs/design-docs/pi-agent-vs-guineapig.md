@@ -1,5 +1,8 @@
 # Pi-Agent 与 GuineaPig 实现对比分析
 
+> **状态标注（2026-10-17）**：**分析文档**，描述当时（2026-10-08）的实现对比，内容按原分析保留。
+> 结论仍有效：GuineaPig 采用 Plan-then-Execute（自研 DAG），Pi-Agent 采用 ReAct loop。
+
 ## Metadata
 - **Status**: draft
 - **Created**: 2026-10-08

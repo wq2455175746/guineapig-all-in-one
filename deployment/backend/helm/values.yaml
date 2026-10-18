@@ -38,14 +38,30 @@ deployment:
         cpu: "0.5"
         memory: 512Mi
     restartPolicy: Always
-    terminationGracePeriodSeconds: 30
+    terminationGracePeriodSeconds: 60
+    lifecycle:
+      preStop:
+        exec:
+          command: ["sh", "-c", "sleep 8"]
     dnsPolicy: ClusterFirst
     imagePullPolicy: IfNotPresent
   strategy:
-    maxUnavailable: 25%
-    maxSurge: 25%
+    # 升级时先拉起新 Pod、容量不降，逐 Pod 替换，限制单次断连波及面
+    maxUnavailable: 0
+    maxSurge: 1
   revisionHistoryLimit: 10
   progressDeadlineSeconds: 600
+
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+
+# IM Bot 专用实例：enabled=true 时创建 1 副本的 {name}-bots Deployment 承载所有
+# IM 长连接（RUN_BOTS=true），主 Deployment 则 RUN_BOTS=false。
+# enabled=false 时无专用实例，主 Deployment 自身 RUN_BOTS=true（单实例兼容）。
+bots:
+  enabled: true
+  replicaCount: 1
 
 affinity: {}
 nodeSelector: {}

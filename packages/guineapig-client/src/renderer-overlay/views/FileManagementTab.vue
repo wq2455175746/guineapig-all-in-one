@@ -133,7 +133,7 @@ const toast = useToast()
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:6880'
 const userId = localStorage.getItem('user_id') || ''
 
-const fileTypeOptions = ['txt', 'markdown', 'html', 'pdf', 'mp3', 'img', 'other']
+const fileTypeOptions = ['txt', 'markdown', 'html', 'pdf', 'office', 'mp3', 'img', 'other']
 const embedFilterOptions = [
   { label: '全部', value: -1 },
   { label: '普通', value: 0 },
@@ -141,11 +141,11 @@ const embedFilterOptions = [
 ]
 
 const fileTypeLabels: Record<number, string> = {
-  0: 'TXT', 1: 'MARKDOWN', 2: 'HTML', 3: 'PDF', 4: 'MP3', 5: 'IMG', 99: 'OTHER'
+  0: 'TXT', 1: 'MARKDOWN', 2: 'HTML', 3: 'PDF', 4: 'MP3', 5: 'IMG', 6: 'OFFICE', 99: 'OTHER'
 }
 
 const fileTypeMapToInt: Record<string, number> = {
-  txt: 0, markdown: 1, html: 2, pdf: 3, mp3: 4, img: 5, other: 99
+  txt: 0, markdown: 1, html: 2, pdf: 3, mp3: 4, img: 5, office: 6, other: 99
 }
 
 interface FileItem {
@@ -313,7 +313,9 @@ function detectFileType(filename: string): number {
   const map: Record<string, number> = {
     txt: 0, md: 1, markdown: 1, html: 2, htm: 2,
     pdf: 3, mp3: 4, wav: 4, ogg: 4, flac: 4,
-    png: 5, jpg: 5, jpeg: 5, gif: 5, svg: 5, webp: 5, bmp: 5, ico: 5
+    png: 5, jpg: 5, jpeg: 5, gif: 5, svg: 5, webp: 5, bmp: 5, ico: 5,
+    docx: 6, doc: 6, docm: 6, xlsx: 6, xls: 6, xlsm: 6,
+    pptx: 6, ppt: 6, rtf: 6, odt: 6, ods: 6, odp: 6, epub: 6, csv: 6
   }
   return map[ext] ?? 99
 }
@@ -334,13 +336,13 @@ function fileTypeLabel(type: number): string {
 
 function fileTypeSeverity(type: number): string {
   const map: Record<number, string> = {
-    0: 'info', 1: 'info', 2: 'warn', 3: 'danger', 4: 'success', 5: 'contrast', 99: 'secondary'
+    0: 'info', 1: 'info', 2: 'warn', 3: 'danger', 4: 'success', 5: 'contrast', 6: 'info', 99: 'secondary'
   }
   return map[type] || 'secondary'
 }
 
 function canEmbed(fileType: number): boolean {
-  return fileType === 0 || fileType === 1 || fileType === 2
+  return fileType === 0 || fileType === 1 || fileType === 2 || fileType === 3 || fileType === 6
 }
 
 function handleEmbed(data: FileItem) {

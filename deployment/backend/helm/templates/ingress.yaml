@@ -8,6 +8,7 @@ metadata:
     nginx.ingress.kubernetes.io/proxy-body-size: {{ .Values.ingress.proxyBodySize }}
     nginx.ingress.kubernetes.io/proxy-next-upstream-timeout: '{{ .Values.ingress.proxyNextUpstreamTimeout }}'
     nginx.ingress.kubernetes.io/proxy-read-timeout: '{{ .Values.ingress.proxyReadTimeout }}'
+    nginx.ingress.kubernetes.io/proxy-send-timeout: '{{ .Values.ingress.proxySendTimeout }}'
     nginx.ingress.kubernetes.io/rewrite-target: '{{ .Values.ingress.rewriteTarget }}'
 spec:
   {{- $hasTLS := false }}

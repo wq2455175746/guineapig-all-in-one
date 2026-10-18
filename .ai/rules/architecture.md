@@ -111,8 +111,8 @@
 ```
 
 - Backend `pkg/tasks/` 定义任务类型和 Handler
-- `Scheduler` 注册 cron 表达式定时入队
-- `Server` 注册 Handler 异步消费
+- `Scheduler` 注册 cron 表达式定时入队（注册在 `main.go`）；**无 leader 选举/分布式锁**，多副本会各自入队 → 定时任务必须带 `asynq.Unique(ttl)` 去重（TTL < 周期且 > 副本时钟抖动）
+- `Server`（worker）才是分布式的：多副本共享同一 Redis 队列，一条队列消息只被一个 worker 执行一次
 - 替代旧的 goroutine+ticker + rdb.Del() 模式
 
 ## OTel Metrics 数据流
@@ -188,15 +188,18 @@ deployment/
 │   ├── Chart.yaml
 │   ├── values-{env}.yaml       # dev/test/pre/release
 │   └── templates/
-│       ├── deployment.yaml     # config.yaml ConfigMap 挂载, HTTP GET /health 探针
+│       ├── deployment.yaml     # 主 Deployment（RUN_BOTS=false）；Pod 规格经 _helpers.tpl 的 podTemplate 复用
+│       ├── deployment-bots.yaml # IM Bot 专用 1 副本 Deployment（RUN_BOTS=true, strategy: Recreate）
 │       ├── service.yaml        # ClusterIP
 │       ├── configmap.yaml      # config.yaml 嵌入 (${ENV_VAR} 从 Secret 注入)
 │       ├── secret.yaml         # MYSQL_PASSWORD, REDIS_PASSWORD, JWT_SECRET, S3_AK/SK
+│       ├── pdb.yaml            # PodDisruptionBudget（保护驱逐/维护）
 │       └── ingress.yaml        # 按环境启用
 ├── aiagent/helm/              # Python FastAPI - port 8000
 │   ├── ...                     # Secret envFrom 注入环境变量
 │   └── templates/
-│       └── pvc.yaml            # /app/data 持久化（技能数据）
+│       ├── pvc.yaml            # /app/data 持久化（技能数据，多副本需 RWX）
+│       └── pdb.yaml            # PodDisruptionBudget
 └── ops-web/helm/              # Nginx 静态服务 - port 80
     ├── ...                     # ConfigMap 挂载 nginx.conf
     └── templates/
@@ -209,3 +212,28 @@ deployment/
 - Ops-web: `node:22-alpine` build → `nginx:alpine` serve (多阶段)
 - 所有服务必须暴露 `/health` 端点供 HEALTHCHECK / K8s probe 使用
 - Backend 的 `/health` 和 `/api/v1/health` 必须注册在 Auth 中间件之前
+
+## 分布式部署与长连接（多副本 / 最小影响升级）
+
+长连接把执行状态绑在进程上，服务因此是**有状态**的，不能像无状态微服务那样无感升级：
+
+| 连接 | 状态所在 | 多副本策略 |
+|------|---------|-----------|
+| client↔backend WS | backend `chat_hub.go` 的 `Hub.clients` / `aiAgentConns` | 单 TCP 连接天然钉 Pod，推送由本连接请求触发 → 无需跨 Pod 广播 |
+| backend↔aiagent SSE + 控制 POST | aiagent `event_manager.py` 的 `AgentEventManager._sessions` | Service `sessionAffinity: ClientIP`（同一 backend Pod 源 IP 钉同一 aiagent Pod） |
+
+### 多副本规则
+1. **有状态下游 Service**：`sessionAffinity: ClientIP`
+2. **IM Bot**（每副本各建外部长连接会出错）：`RUN_BOTS` + 1 副本专用 Deployment + Redis Pub/Sub 跨副本控制（`bot_control.go`）
+3. **Asynq 定时任务**：`asynq.Unique(ttl)` 去重（Scheduler 无 leader 选举）
+4. **共享卷**：多副本共享同一份文件用 `ReadWriteMany`（NFS 天然支持）
+5. **ID 生成**：Snowflake nodeID 按 Pod 派生（`K8S_POD_NAME`/hostname）
+
+### 升级规则
+- `strategy: maxUnavailable:0 / maxSurge:1`（逐 Pod、容量不降）
+- `preStop: sleep 8`（先摘 endpoint 再 SIGTERM）+ PodDisruptionBudget
+- 大 `terminationGracePeriodSeconds`（backend 60 / aiagent 120）
+- Ingress `proxy-read-timeout` / `proxy-send-timeout` ≥ 3600s
+
+> 普通聊天断开后可重连并从 DB 恢复；**执行中的 Agent 任务升级会丢失**（无断点续跑）。要零丢失需把 Hub / AgentEventManager 状态外置到 Redis 并实现可恢复执行。
+> 详见 `docs/design-docs/distributed-k8s-deployment.md`。

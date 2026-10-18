@@ -45,6 +45,10 @@ type Config struct {
 	S3      S3      `yaml:"s3" json:"s3"`
 	AiAgent AiAgent `yaml:"aiAgent" json:"aiAgent"`
 	AiModel AiModel `yaml:"aimodel" json:"aimodel"`
+	// RunBots 是否在本实例启动 IM Bot 长连接。
+	// 多副本部署时仅由专用 Bot 实例设 RUN_BOTS=true，其余为 false，
+	// 避免每个副本各建一条长连接、以及绑定/解绑只在单个副本生效。
+	RunBots bool `yaml:"-" json:"runBots"`
 }
 
 type Admin struct {
@@ -120,6 +124,13 @@ func ParseConfig() *Config {
 		conf.Debug = true
 	} else {
 		conf.Debug = false
+	}
+
+	// RUN_BOTS 控制是否在本实例启动 IM Bot 长连接。
+	// 默认 true（保持单实例行为）；多副本时由专用 Bot 实例设为 true，其余设为 false。
+	conf.RunBots = true
+	if v := os.Getenv("RUN_BOTS"); v == "false" || v == "0" {
+		conf.RunBots = false
 	}
 
 	// JWT_SECRET 未配置时生成随机密钥兜底（Token 不跨重启/多实例共享）

@@ -1,5 +1,9 @@
 # IM 平台 Bot 集成方案设计
 
+> **状态标注（2026-10-17）**：**部分实现**。飞书/Lark 长连接 Bot 已落地
+> （`internal/bot/feishu.go`，`larksuite/oapi-sdk-go`），绑定管理 API `/api/v1/bot/{bind,unbind,info}`
+> 与后台 `/admin/api/v1/bot/list` 已实现；企微/钉钉等其余平台未实现。本文内容按原设计保留。
+
 ## Metadata
 - **Status**: draft
 - **Created**: 2026-07-03

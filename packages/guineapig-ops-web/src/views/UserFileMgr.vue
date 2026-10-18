@@ -98,6 +98,7 @@ const fileTypeOptions = [
   { label: 'PDF', value: 3 },
   { label: 'MP3', value: 4 },
   { label: '图片', value: 5 },
+  { label: 'Office', value: 6 },
   { label: '其他', value: 99 },
 ]
 
@@ -106,12 +107,12 @@ function getUserLabel(userId) {
 }
 
 function fileTypeLabel(type) {
-  const map = { 0: 'TXT', 1: 'Markdown', 2: 'HTML', 3: 'PDF', 4: 'MP3', 5: '图片', 99: '其他' }
+  const map = { 0: 'TXT', 1: 'Markdown', 2: 'HTML', 3: 'PDF', 4: 'MP3', 5: '图片', 6: 'Office', 99: '其他' }
   return map[type] || '其他'
 }
 
 function fileTypeSeverity(type) {
-  const map = { 0: 'info', 1: 'success', 2: 'warn', 3: 'danger', 4: 'secondary', 5: 'contrast', 99: null }
+  const map = { 0: 'info', 1: 'success', 2: 'warn', 3: 'danger', 4: 'secondary', 5: 'contrast', 6: 'info', 99: null }
   return map[type] || null
 }
 

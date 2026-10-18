@@ -261,3 +261,18 @@ const DEFAULT_ALLOWED_COMMAND_BINARIES = [...newList]
 **错误**：`while` 每轮开头 `self.failed_steps = []`，re-plan 只取 `failed_steps[0]`，修正成功后循环退出 `failed = bool(self.failed_steps)` 为假 → 同批次里第二个未解决失败被静默丢弃，`execution_complete.status` 误报 `completed`；`completed_steps` 还会把未执行的尾部步骤计为完成
 **正确**：维护 `carried` 跨轮携带未解决失败（`unresolved = carried + bad`，re-plan 后 `carried = unresolved[1:]`）；`failed = bool(carried) or bool(self.failed_steps)`；`completed_steps` 在循环后统一按"原始步骤中 step_results 无 error"计数
 **原因**：循环内的"当前批次状态"与"整体未解决状态"必须分开；用批次状态推导全局结论会漏报失败、误报完成
+
+## AP-039: 把有状态长连接服务当无状态微服务做多副本 / 滚动升级
+**错误**：WS/SSE 长连接把执行状态存在进程内（backend `Hub`、aiagent `AgentEventManager._sessions`），却按"任意多副本 + 任意滚动升级"假设直接扩副本；升级时连接被硬断、执行中的 Agent 任务丢失
+**正确**：识别状态所在层——client↔backend WS 单 TCP 天然钉 Pod（推送由本连接触发，无需广播）；backend↔aiagent 多请求协议用 Service `sessionAffinity: ClientIP` 钉同源；升级 preStop+PDB+`maxUnavailable:0`+大 grace；要零丢失必须状态外置(Redis)+断点续跑
+**原因**："无感升级"的前提是**实例无状态**；长连接一旦承载会话状态就退化回有状态服务，权衡方式完全不同
+
+## AP-040: 多副本下每副本各持一份外部长连接 + 进程内管理器
+**错误**：`StartupBots()` 每个 backend 副本都启动 IM Bot，`BotManager` 是进程内单例 → 每副本每 app 各建一条飞书长连接；`UnbindBot`→`StopBot` 只停处理该请求的副本，用户解绑后仍被回复，连接数×副本数逼近平台上限
+**正确**：这类"天然单例 + 外部长连接"的职责用 `RUN_BOTS` 开关收敛到 1 副本专用 Deployment；启停动作经 Redis Pub/Sub 广播，让任意副本处理的变更全局生效（见 SP-048）
+**原因**：进程内单例 + 每副本各建连接 = 既没做到真正多副本、又破坏单例语义；对外部系统而言"连接/注册"必须是全局唯一
+
+## AP-041: 依赖 asynq Scheduler 多实例自动协调
+**错误**：多副本各自 `NewScheduler`，以为 asynq 会协调只执行一次；实际每个 scheduler 每到点各自 `Enqueue` → 定时任务被执行 N 次（asynq 写 Redis 的 heartbeat 只是给 Web UI 展示）
+**正确**：定时任务加 `asynq.Unique(ttl)` 入队去重（TTL<周期且>副本时钟抖动），保留多副本 HA；勿用"自己写 leader 选举"（易出竞态/无故障转移）。asynq 的分布式性在 **Server(worker)** 而非 Scheduler
+**原因**：把"组件可观测（Web UI 列出多个实例）"误当成"组件已做分布式协调"

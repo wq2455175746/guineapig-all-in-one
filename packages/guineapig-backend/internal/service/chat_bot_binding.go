@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"guineapig/config"
 	"guineapig/internal/bot"
 	"guineapig/internal/model"
 	"guineapig/internal/request"
@@ -122,20 +123,9 @@ func BindBot(ctx context.Context, req *request.BotBindRequest) (*response.BotBin
 		}
 	}
 
-	// 启动 Bot 连接
-	if err := startBotForBinding(ctx, binding); err != nil {
-		logger.Errorf("[BotBind] 启动 Bot 失败: user_id=%d, platform=%s, err=%v",
-			req.UserId, req.Platform, err)
-		if uerr := binding.UpdateStatus(ctx, 2); uerr != nil { // 连接失败
-			logger.Errorf("[BotBind] 更新连接失败状态出错: binding_id=%d, err=%v", binding.Id, uerr)
-		}
-		return &response.BotBindResponse{
-			Id:        binding.Id,
-			Platform:  binding.Platform,
-			BotStatus: 2,
-		}, nil
-	}
-
+	// 广播启动指令：实际长连接由运行 Bot 的实例（RUN_BOTS=true）建立。
+	// 状态先置为已连接，真实连接由 Bot 实例异步完成。
+	PublishBotControl(ctx, "start", req.Platform, req.UserId)
 	if err := binding.UpdateStatus(ctx, 1); err != nil { // 已连接
 		logger.Errorf("[BotBind] 更新已连接状态失败: binding_id=%d, err=%v", binding.Id, err)
 	}
@@ -152,10 +142,8 @@ func UnbindBot(ctx context.Context, req *request.BotUnbindRequest) error {
 		return errors.New("platform 不能为空")
 	}
 
-	// 停止 Bot 连接
-	if err := BotManagerInstance.StopBot(req.Platform, req.UserId); err != nil {
-		logger.Warnf("[BotUnbind] 停止 Bot 失败: %v", err)
-	}
+	// 广播停止指令：由运行 Bot 的实例执行本地停止
+	PublishBotControl(ctx, "stop", req.Platform, req.UserId)
 
 	// 删除绑定记录
 	binding, err := model.MBotBinding.FindByUserAndPlatform(ctx, req.UserId, req.Platform)
@@ -230,6 +218,11 @@ func syncBotStatus(b *model.BotBinding) int {
 
 // startBotForBinding 根据绑定信息启动 Bot
 func startBotForBinding(ctx context.Context, binding *model.BotBinding) error {
+	// 仅运行 Bot 的实例（RUN_BOTS=true）才建立长连接
+	if !config.Global.RunBots {
+		return nil
+	}
+
 	var extraJSON string
 	if binding.ExtraConfig != nil {
 		extraJSON = *binding.ExtraConfig

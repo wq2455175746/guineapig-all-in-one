@@ -593,6 +593,51 @@
       "context": "编写计划时手写的断言有误：truncate head byte-limit 写 `\"a\"*50`（实际应为 `\"abcdefghij\"*5`）；中间件 block 测试用 capability=rag 但拦截器只拦 cli（永远不触发）。执行子代理发现后按真实语义修正",
       "action": "TDD 执行阶段，若测试与实现语义冲突，先判定是'实现错'还是'计划测试错'：用最小推导（如截断前 50 单字节字符 = 前 5 个 10 字符串元）证明正确期望，修测试而非改实现；能力名、位置等常量要与被拦截/被检查的对象一致",
       "tags": ["process", "tdd", "plan-review", "testing"]
+    },
+    {
+      "id": "L067",
+      "date": "2026-10-18",
+      "type": "design",
+      "title": "长连接把执行状态绑在进程上——有状态服务不能像无状态微服务那样无感升级",
+      "context": "client↔backend 是 WS 长连接、backend↔aiagent 是 SSE+多控制 POST；backend `Hub.clients`/`aiAgentConns`（chat_hub.go）与 aiagent `AgentEventManager._sessions`（event_manager.py）都是进程内内存态。之前按'无状态微服务'理解，误判可任意多副本 + 任意滚动升级",
+      "action": "多副本改造要点：① client↔backend 的 WS 是单 TCP 连接，kube-proxy 建立连接时钉一次 Pod，且当前所有推送都由本连接自己的请求触发 → 无需跨 Pod 广播即可多副本；② backend↔aiagent 是'1 条 SSE + N 条控制 POST'的多请求协议，用 Service `sessionAffinity: ClientIP` 让同一 backend Pod 源 IP 的流量钉同一 aiagent Pod；③ 升级用 preStop(先摘 endpoint)+PDB+`maxUnavailable:0`+大 grace；④ 真正零丢失需状态外置(Redis)+断点续跑。结论：长连接不是原罪，'连接承载了状态'才是",
+      "tags": ["architecture", "distributed", "websocket", "sse", "stateful", "k8s"]
+    },
+    {
+      "id": "L068",
+      "date": "2026-10-18",
+      "type": "bugfix",
+      "title": "asynq 的分布式性在 Server 不在 Scheduler；Scheduler 无 leader 选举，多实例会重复入队",
+      "context": "多副本 backend 每副本各 `NewScheduler`+`Register`，误以为 asynq 会自动协调只执行一次。查 v0.26.0 源码：`scheduler.enqueueJob.Run` 无条件 `client.Enqueue`，`beat()`/`WriteSchedulerEntries` 心跳只给 Web UI 展示、不参与协调",
+      "action": "去重用 `asynq.Unique(ttl)`（入队时 Redis 锁，原子去重；TTL 必须 < 调度周期且 > 各副本同 tick 时钟抖动），而不是自己写 leader 选举；单实例方案无 HA（那个 Pod 挂就停）。真正的分布式组件是 **Server(worker)**——多副本共享队列，一条队列消息只被一个 worker 执行一次",
+      "tags": ["asynq", "distributed", "scheduler", "dedup", "redis"]
+    },
+    {
+      "id": "L069",
+      "date": "2026-10-18",
+      "type": "design",
+      "title": "飞书长连接是集群模式、不广播——多副本 Bot 的真问题不是重复回复，而是每副本独立的内存管理器",
+      "context": "之前假设多副本 IM Bot = 重复回复。查飞书官方文档：长连接为集群模式，同一事件只随机投给一个 client（每应用最多 50 条连接）",
+      "action": "真正问题在每副本独立的内存 `BotManager`：① `UnbindBot`→`StopBot` 只停处理请求的那个副本 → 用户解绑后仍被回复；② 每副本每 app 各建一条长连接 → 连接数×副本数，逼近 50 上限；③ 状态查询不一致。修法：`RUN_BOTS` 开关 + 1 副本专用 Deployment 承载所有长连接 + Redis Pub/Sub(`bot:control`) 广播启停指令，使任意副本处理的绑定/解绑全局生效",
+      "tags": ["im-bot", "feishu", "distributed", "pubsub", "singleton"]
+    },
+    {
+      "id": "L070",
+      "date": "2026-10-18",
+      "type": "bugfix",
+      "title": "Snowflake nodeID 硬编码导致多副本 ID 碰撞",
+      "context": "`pkg/utils/snowflake.go` 固定 `snowflake.NewNode(1)`，所有副本同节点 ID，同一毫秒内不同副本会生成相同的 64 位 ID（用于建用户 `Id`，PK 冲突）",
+      "action": "节点 ID 从实例标识派生：优先 `K8S_POD_NAME`、回退 `hostname`，fnv 哈希到 [0,1023]。凡多进程/多副本使用 Snowflake，必须保证 nodeID 全局唯一，不能硬编码",
+      "tags": ["snowflake", "distributed", "id-generation", "collision"]
+    },
+    {
+      "id": "L071",
+      "date": "2026-10-18",
+      "type": "bugfix",
+      "title": "多副本共享同一份文件必须用 RWX，不能沿用单副本的 RWO",
+      "context": "aiagent `/app/data` 存 skills/task/rag/asr 文件，多副本必须共享读同一份；PVC `accessMode` 声明为 `ReadWriteOnce`。NFS 无 attach 控制器通常不强制，但块存储下第二个 Pod 会 FailedAttachVolume，语义本身也是错的",
+      "action": "多副本共享卷改 `ReadWriteMany`（NFS 天然支持 RWX）。'必须共享'的场景要显式声明 RWX",
+      "tags": ["k8s", "pvc", "distributed", "storage", "rwx"]
     }
   ]
 }

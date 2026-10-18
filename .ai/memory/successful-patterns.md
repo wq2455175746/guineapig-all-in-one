@@ -636,3 +636,32 @@ while pending:
 failed = bool(carried) or bool(self.failed_steps)
 ```
 **适用**：Plan-then-Execute 的 DAG 增加"遇错重规划"能力（对标 pi-agent ReAct 的自适应，但保持有界、可审计）
+
+## SP-047: 分布式长连接服务的最小影响升级清单
+```yaml
+# 每个 Deployment
+strategy: { rollingUpdate: { maxUnavailable: 0, maxSurge: 1 } }   # 逐 Pod、容量不降
+terminationGracePeriodSeconds: 60            # 覆盖 preStop + 收尾（SSE 场景取 120）
+lifecycle: { preStop: { exec: { command: ["sh","-c","sleep 8"] } } }  # 先摘 endpoint 再 SIGTERM
+---
+# PodDisruptionBudget
+spec: { minAvailable: N-1 }                  # 保护节点驱逐/维护
+---
+# 有状态下游（SSE/多请求会话）Service——让同源流量钉同一 Pod
+spec: { sessionAffinity: ClientIP }
+---
+# Ingress（nginx）——长连接必须
+nginx.ingress.kubernetes.io/proxy-read-timeout: '3600'
+nginx.ingress.kubernetes.io/proxy-send-timeout: '3600'
+```
+**适用**：WS/SSE/gRPC 流等有状态服务的多副本 + 滚动升级；普通聊天可重连恢复，执行中任务是否可丢取决于是否需要状态外置
+
+## SP-048: Redis Pub/Sub 让"单例职责"在多副本下全局生效
+```go
+// 任意副本处理变更 → 广播；仅承担单例职责的实例订阅并执行
+plugin.GetClient().Publish(ctx, "bot:control", payload)     // 如 Bind/Unbind 后
+sub := plugin.GetClient().Subscribe(ctx, "bot:control")     // 仅 Bot 实例
+for msg := range sub.Channel() { apply(ctx, msg) }          // 本地启停
+```
+**要点**：把"必须全局唯一的动作"（建立/撤销外部长连接、启停单例）从请求处理位置解耦，交给订阅方；避免"解绑只停处理该请求的那个副本"
+**适用**：IM Bot、webhook 注册、定时器启停等每副本各持一份会出错、又不能真正多副本化的单例职责

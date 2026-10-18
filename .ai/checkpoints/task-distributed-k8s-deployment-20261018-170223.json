@@ -1,0 +1,37 @@
+{
+  "timestamp": "2026-10-18T17:02:23.743666",
+  "reason": "session-end",
+  "focus": {
+    "service": "all",
+    "task_id": "distributed-k8s-deployment",
+    "task_name": "分布式 K8s 部署与最小影响升级（backend/aiagent 多副本）",
+    "status": "completed",
+    "started_at": "2026-10-18",
+    "description": "将 backend/aiagent 从单副本有状态部署改造为可多副本、滚动升级干扰最小的 K8s 部署，并修复多副本下会实际出错的分布式问题。核心结论：长连接（client↔backend 的 WS、backend↔aiagent 的 SSE）把执行状态绑在具体进程上（backend Hub / aiagent AgentEventManager 均为进程内内存态），因此不能像无状态微服务那样无感升级；多副本需连接粘性/状态外置。落地以 Helm 为主 + 少量代码：aiagent Service ClientIP 亲和、preStop + PDB + maxUnavailable:0、backend 多副本；并顺手修复 asynq Scheduler 重复入队（Unique）、aiagent PVC RWO→RWX、Snowflake nodeID 按 Pod 派生、IM Bot 单实例化（RUN_BOTS + 专用 Deployment + Redis Pub/Sub 跨副本控制）。",
+    "milestones": {
+      "分布式部署与升级可行性分析": "2026-10-18",
+      "Helm 多副本 / 最小影响升级改造（backend+aiagent）": "2026-10-18",
+      "asynq Scheduler Unique 去重": "2026-10-18",
+      "aiagent PVC RWX + Snowflake nodeID 派生": "2026-10-18",
+      "IM Bot 单实例化（RUN_BOTS + 专用 Deployment + Pub/Sub）": "2026-10-18"
+    },
+    "completed_tasks": [
+      "Helm aiagent：Service sessionAffinity: ClientIP（同一 backend Pod 的 SSE + 控制 POST 钉同一 aiagent Pod）；terminationGracePeriodSeconds 120；PDB minAvailable N-1；strategy maxUnavailable:0/maxSurge:1；ingress proxy-read/send-timeout 3600；preStop sleep 8",
+      "Helm backend：多副本、PDB、preStop、grace 60、strategy 0/1；ingress 超时注解；Deployment Pod 模板抽成 guineapig-backend.podTemplate",
+      "main.go：两个定时任务加 asynq.Unique(4m/11h) 入队去重（保留多副本 HA），PostEnqueueFunc 静默 ErrDuplicateTask",
+      "IM Bot：config.RunBots(RUN_BOTS) + main.go 门控 StartupBots + SubscribeBotControl；internal/service/bot_control.go Redis Pub/Sub 'bot:control'；Bind/Unbind 改为广播指令；startBotForBinding 加 RunBots 守卫",
+      "Helm backend：新增 deployment-bots.yaml（1 副本 RUN_BOTS=true, strategy Recreate）；values bots.enabled 单源开关（enabled=false 时主 Deployment 自持 Bot）",
+      "aiagent PVC accessMode ReadWriteOnce→ReadWriteMany（多副本共享 /app/data）",
+      "pkg/utils/snowflake.go nodeID 由 hash(K8S_POD_NAME|hostname)%1024 派生 + snowflake_test.go",
+      "文档 docs/design-docs/distributed-k8s-deployment.md（含已知缺口与已修复项）"
+    ],
+    "next_tasks": [
+      "客户端重连加 jitter（客户端代码）以缓解升级惊群",
+      "执行中的 Agent 任务升级丢失需状态外置(Redis)+断点续跑（较大重构）",
+      "验证 aiagent Pod 间无 SNAT 到节点 IP（ClientIP 亲和键）",
+      "可选：把 bot 状态查询/管理也定向到 Bot 实例，或增加事件幂等去重"
+    ],
+    "updated_at": "2026-10-18T00:00:00"
+  },
+  "session_end": true
+}

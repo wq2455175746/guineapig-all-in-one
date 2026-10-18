@@ -29,6 +29,7 @@ dependencies = [
     "mcp>=1.8.0",
     "pymilvus>=3.0.0",
     "redis>=5.0.0",
+    "firecrawl-anydoc>=0.2.4",
 ]
 
 
