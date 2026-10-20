@@ -4,9 +4,9 @@ import "time"
 
 // WebSocket 通用消息信封
 type WSEnvelope struct {
-	Type    string         `json:"type"`    // chat.send / chat.content / chat.command / chat.command_result / chat.done / chat.error / chat.cancel / ping / pong
-	From    string         `json:"from"`    // client / backend / aiagent
-	To      string         `json:"to"`      // client / aiagent
+	Type    string         `json:"type"` // chat.send / chat.content / chat.command / chat.command_result / chat.done / chat.error / chat.cancel / ping / pong
+	From    string         `json:"from"` // client / backend / aiagent
+	To      string         `json:"to"`   // client / aiagent
 	Payload map[string]any `json:"payload"`
 	Meta    *WSMeta        `json:"meta,omitempty"`
 }
@@ -52,6 +52,7 @@ type ConversationItem struct {
 	Id                 int64      `json:"id,string"`
 	Title              string     `json:"title"`
 	ModelId            int64      `json:"modelId,string"`
+	Source             string     `json:"source"`
 	MessageCount       int        `json:"messageCount"`
 	Status             string     `json:"status"`
 	StartAt            *time.Time `json:"startAt"`
@@ -116,4 +117,3 @@ type AgentDelegateResultRequest struct {
 	Result     map[string]any `json:"result,omitempty"`
 	Error      string         `json:"error,omitempty"`
 }
-

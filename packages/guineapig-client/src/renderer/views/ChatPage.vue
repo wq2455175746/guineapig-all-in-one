@@ -31,7 +31,8 @@
         :loading="loadingConversations" @select="selectConversation" @load-more="fetchConversations" />
 
       <!-- 右侧：对话聊天框 -->
-      <ChatContent :messages="messages" :selectedTitle="selectedTitle" :isStreaming="isStreaming"
+      <ChatContent :messages="messages" :selectedTitle="selectedTitle" :selectedSource="selectedSource"
+        :isStreaming="isStreaming"
         :selectedModel="selectedModel" :modelOptions="modelOptions" :webSearchEnabled="webSearchEnabled"
         :agentMode="agentMode" :showCommandDialog="showCommandDialog" :pendingCommands="pendingCommands"
         :commandResults="commandResults" :isExecutingCommands="isExecutingCommands"
@@ -687,6 +688,7 @@ interface ChatHistoryItem {
   id: number
   title: string
   modelId: number
+  source?: string
   messageCount: number
   status: string
   lastMessagePreview: string
@@ -766,16 +768,19 @@ async function fetchMessages(conversationId: number) {
 
 const selectedId = ref<number | null>(null)
 const selectedTitle = ref('新对话')
+const selectedSource = ref('')
 
 function selectConversation(item: ChatHistoryItem) {
   selectedId.value = Number(item.id)
   selectedTitle.value = item.title
+  selectedSource.value = item.source || ''
   fetchMessages(item.id)
 }
 
 function newSession() {
   selectedId.value = null
   selectedTitle.value = '新对话'
+  selectedSource.value = ''
   messages.value = []
 }
 

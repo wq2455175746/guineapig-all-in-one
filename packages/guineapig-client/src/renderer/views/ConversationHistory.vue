@@ -16,7 +16,10 @@
             <i class="pi pi-comment"></i>
           </div>
           <div class="history-item-body">
-            <div class="history-item-summary">{{ truncate(item.lastMessagePreview || item.title, 14) }}</div>
+            <div class="history-item-summary">
+              <span v-if="item.source === 'feishu'" class="source-tag">飞书</span>
+              {{ truncate(item.lastMessagePreview || item.title, 14) }}
+            </div>
             <div class="history-item-time">{{ formatTimeStr(item.updatedAt) }}</div>
           </div>
         </div>
@@ -41,6 +44,7 @@ interface ChatHistoryItem {
   id: number
   title: string
   modelId: number
+  source?: string
   messageCount: number
   status: string
   lastMessagePreview: string
@@ -226,6 +230,18 @@ onUnmounted(() => {
 .history-item-time {
   font-size: 11px;
   color: #b0b0b0;
+}
+
+.source-tag {
+  display: inline-block;
+  padding: 0 5px;
+  margin-right: 4px;
+  font-size: 10px;
+  line-height: 16px;
+  color: #3370ff;
+  background: #e8f0ff;
+  border-radius: 3px;
+  vertical-align: middle;
 }
 
 .history-empty {

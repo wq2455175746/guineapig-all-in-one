@@ -8,6 +8,7 @@ type ConversationHistoryItem struct {
 	Title        string     `json:"title"`
 	ModelId      int64      `json:"modelId,string"`
 	ModelName    string     `json:"modelName"`
+	Source       string     `json:"source"`
 	Status       string     `json:"status"`
 	MessageCount int        `json:"messageCount"`
 	StartAt      *time.Time `json:"startAt"`

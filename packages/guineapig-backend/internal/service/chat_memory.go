@@ -37,6 +37,7 @@ func ListConversationHistory(ctx context.Context, req *request.ConversationHisto
 		Id           int64
 		Title        string
 		ModelId      int64
+		Source       string
 		Status       string
 		MessageCount int
 		StartAt      *time.Time
@@ -86,6 +87,7 @@ func ListConversationHistory(ctx context.Context, req *request.ConversationHisto
 			Title:        r.Title,
 			ModelId:      r.ModelId,
 			ModelName:    r.ModelName,
+			Source:       r.Source,
 			Status:       r.Status,
 			MessageCount: r.MessageCount,
 			StartAt:      r.StartAt,
@@ -359,9 +361,9 @@ func CreateMemorySummary(ctx context.Context, req *request.MemorySummarizeReques
 
 	// 9. 异步转发到 aiagent
 	aiAgentReq := &AiAgentMemoryRequest{
-		MemoryId:         memoryIds["daily_summary"],
-		MemoryIds:        memoryIds,
-		UserId:           req.UserId,
+		MemoryId:  memoryIds["daily_summary"],
+		MemoryIds: memoryIds,
+		UserId:    req.UserId,
 		ModelInfo: &ModelInfo{
 			ApiKey:    decryptedKey,
 			BaseUrl:   aiModel.ApiUrl,

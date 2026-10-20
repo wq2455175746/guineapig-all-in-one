@@ -41,6 +41,12 @@
               <Tag :value="data.modelName || '未知'" severity="info" />
             </template>
           </Column>
+          <Column field="source" header="来源">
+            <template #body="{ data }">
+              <Tag :value="data.source === 'feishu' ? '飞书' : '客户端'"
+                :severity="data.source === 'feishu' ? 'warn' : 'secondary'" />
+            </template>
+          </Column>
           <Column header="用户">
             <template #body="{ data }">
               <span>{{ getUserLabel(data.userId || data.user_id) }}</span>

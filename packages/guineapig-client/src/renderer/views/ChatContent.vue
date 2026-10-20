@@ -16,6 +16,7 @@
         <div v-for="msg in messages" :key="msg.messageId" class="message-item"
           :class="msg.role === 'user' ? 'message-user' : 'message-assistant'">
           <div class="message-bubble">
+            <div v-if="msg.role !== 'user' && selectedSource === 'feishu'" class="message-source-tag">飞书</div>
             <div class="message-content" v-html="renderMarkdown(msg.content)" @click="handleContentClick"></div>
             <div v-if="msg.attachments && msg.attachments.length > 0" class="message-attachments">
               <template v-for="att in msg.attachments" :key="att.url">
@@ -244,6 +245,7 @@ interface CommandResult {
 const props = defineProps<{
   messages: ChatMessage[]
   selectedTitle: string
+  selectedSource: string
   isStreaming: boolean
   selectedModel: number | null
   modelOptions: { id: number; model_name: string }[]
@@ -792,6 +794,17 @@ watch(() => props.messages.map(m => m.content + m.messageId).join('|'), () => {
 .message-user .message-bubble {
   background: #f5f5f5;
   color: #060606;
+}
+
+.message-source-tag {
+  display: inline-block;
+  padding: 0 5px;
+  margin-bottom: 4px;
+  font-size: 10px;
+  line-height: 16px;
+  color: #3370ff;
+  background: #e8f0ff;
+  border-radius: 3px;
 }
 
 /* Markdown 渲染样式 — 紧凑排版 */
